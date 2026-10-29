@@ -74,7 +74,12 @@ uv run --no-project python scripts/bench_table.py --write
 `bench/config.json` names the model files and the llama.cpp and diffuse-cpp
 checkouts. The harness waits for an idle CPU before each run, interleaves the
 runtimes, switches the power profile to `performance` for the duration, and
-writes a result file with every raw run. It also kills any process named
+writes a result file with every raw run. On a laptop it measures on mains
+power only: unplugged, it pauses before the next run and prints that it is
+waiting for the charger, and a run the charger left midway is repeated. The
+eval, the quality table and `scripts/gpu_profile.py` do the same through
+`bench/power.py`; `--allow-battery` measures on battery instead and records
+it. It also kills any process named
 `pytest` while it runs, because test suites from other work on the
 development machine kept starting mid-benchmark. Set `"kill_pytest": false`
 in a config to turn that off; the GPU configs (`bench/config-gpu.json`,

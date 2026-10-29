@@ -128,6 +128,11 @@ llama.cpp's `llama-bench` at the same token count).
   repetition;
 - every run starts only when the CPU has been under 10% busy for two seconds;
 - the power profile is `performance` for the duration and restored after;
+- on battery, where a laptop caps CPU and GPU power, it pauses before the
+  next run until the charger is back, and a run the charger left midway is
+  thrown away and repeated (`bench/power.py`; each run records
+  `power_waited_s`, `power_retries` and `on_battery`, and `--allow-battery`
+  measures on battery instead);
 - a watchdog kills any `pytest` process (other work on the machine started
   test suites mid-run), and the kills are logged in the result file;
 - generation time excludes model loading, which is reported as startup;

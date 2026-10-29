@@ -65,6 +65,13 @@ semantic versioning (0.y: minor bumps may break things).
 
 ### Changed
 
+- Timed runs happen on mains power. `bench/run_bench.py`,
+  `bench/eval_gsm8k.py`, `bench/quality.py` and `scripts/gpu_profile.py` pause
+  before the next run while the machine is on battery and resume when the
+  charger is back; a run the charger left midway is thrown away and repeated.
+  Each run records `power_retries` and `on_battery`, and `--allow-battery`
+  measures on battery instead. A benchmark refresh started unplugged on
+  2026-10-29, and nothing in the harness noticed.
 - The GGUF reader rejects a `general.alignment` that is not a uint32 or not a
   non-zero power of two, and an array whose element count is negative or
   larger than the bytes left in the file, naming the key (#55, #56). An
