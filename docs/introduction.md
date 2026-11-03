@@ -32,8 +32,10 @@ minutes](diffusion.md) walks through it with a picture.
 
 ## What does not work yet
 
-- The GPU path is slower than llama.cpp's CUDA build; [Benchmarks](benchmarks.md)
-  has the numbers. It supports NVIDIA only.
+- The GPU path is measured on one laptop part, an RTX 3050 held to 30 W: a
+  LLaDA step takes 0.91 times as long as in llama.cpp's CUDA build and a Dream
+  step 1.02 times as long. [Benchmarks](benchmarks.md) has the numbers. It
+  supports NVIDIA only.
 - Two architectures: LLaDA and Dream. Others stop with
   `unsupported model architecture: <name> (supported: llada, dream)`.
 - One quantization mix: the F32, Q4_K and Q6_K tensors a Q4_K_M file

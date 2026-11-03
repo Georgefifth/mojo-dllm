@@ -55,16 +55,26 @@ semantic versioning (0.y: minor bumps may break things).
   against its CPU twin, and the parity harness takes `--device gpu`.
 - `MOJO_DLLM_GPU_PROFILE=1` splits `--verbose` timings on the GPU.
 - `bench/config-gpu.json` and `bench/config-dream-gpu.json`, against
-  llama.cpp built with CUDA, and their results: llama.cpp's CUDA build is
-  faster than `--device gpu` on the RTX 3050 tested. Results record runs that
+  llama.cpp built with CUDA, and their results. Results record runs that
   started on a busy CPU, and the tables give the quiet-run medians next to
-  them.
+  them. The first results (2026-10-12) had llama.cpp's CUDA build faster than
+  `--device gpu` on the RTX 3050 tested; the kernel work since then reverses
+  that for LLaDA (see Changed).
 - Fairness runs for the CPU comparison: llama.cpp is fastest at 12 threads,
   the most the test CPU runs, and mojo-dllm's forward pass alone stays ahead
   of `llama-bench`.
 
 ### Changed
 
+- The GPU benchmark tables are refreshed against llama.cpp `7df8b87` (issue
+  #15), on mains power, one result file per table
+  (`bench/results/2026-11-03-*`; the 2026-10-12 files moved to
+  `bench/results/archive/`). On the RTX 3050 Laptop, a LLaDA step takes 220.6
+  ms in mojo-dllm and 243.0 ms in llama.cpp CUDA (ratio 0.91, every one of
+  nine paired runs between 0.896 and 0.908); a Dream step takes 218.7 and
+  214.3 ms (ratio 1.02, 1.000 to 1.037). The 2026-10-12 tables had LLaDA at
+  424 and 255 ms and Dream at 412 and 234 ms. Peak host memory is 1.1 GB
+  against 5.3 GB (LLaDA) and 1.2 GB against 5.0 GB (Dream).
 - Timed runs happen on mains power. `bench/run_bench.py`,
   `bench/eval_gsm8k.py`, `bench/quality.py` and `scripts/gpu_profile.py` pause
   before the next run while the machine is on battery and resume when the
