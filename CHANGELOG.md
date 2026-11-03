@@ -69,12 +69,14 @@ semantic versioning (0.y: minor bumps may break things).
 - The GPU benchmark tables are refreshed against llama.cpp `7df8b87` (issue
   #15), on mains power, one result file per table
   (`bench/results/2026-11-03-*`; the 2026-10-12 files moved to
-  `bench/results/archive/`). On the RTX 3050 Laptop, a LLaDA step takes 220.6
-  ms in mojo-dllm and 243.0 ms in llama.cpp CUDA (ratio 0.91, every one of
-  nine paired runs between 0.896 and 0.908); a Dream step takes 218.7 and
-  214.3 ms (ratio 1.02, 1.000 to 1.037). The 2026-10-12 tables had LLaDA at
-  424 and 255 ms and Dream at 412 and 234 ms. Peak host memory is 1.1 GB
-  against 5.3 GB (LLaDA) and 1.2 GB against 5.0 GB (Dream).
+  `bench/results/archive/`). The step time of mojo-dllm over llama.cpp CUDA,
+  as the median of paired runs, went from 1.660 to 0.906 for LLaDA and from
+  1.759 to 1.022 for Dream (from 2.413 and 2.391 in the 2026-10-09 files). Both
+  new ratios are rendered under their tables by `scripts/bench_table.py`, which
+  also refuses a ratio from two result files and a summary that disagrees with
+  its runs. `bench/checks/2026-11-03-gpu-power-limit.txt` records the 30 W limit
+  and three builds run back to back: the earlier kernel gains hold, and the day
+  to day swing in absolute milliseconds follows the SM clock.
 - Timed runs happen on mains power. `bench/run_bench.py`,
   `bench/eval_gsm8k.py`, `bench/quality.py` and `scripts/gpu_profile.py` pause
   before the next run while the machine is on battery and resume when the

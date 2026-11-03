@@ -211,6 +211,7 @@ def main() -> int:
     doc = dict(
         date=dt.datetime.now().isoformat(timespec="seconds"), label=args.label,
         runtime=args.runtime, versions=versions, gpu=gpu, on_battery=pinfo["on_battery"],
+        power_source=pinfo["power_source"],
         power_retries=pinfo["power_retries"], model=pathlib.Path(args.model).name,
         seq_len=args.seq_len if llama else j["prompt_tokens"] + j["gen_length"],
         steps=args.steps, forward_passes=forwards,

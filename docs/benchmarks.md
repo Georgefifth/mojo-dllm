@@ -22,7 +22,7 @@ Versions: mojo-dllm `bdd268b`, Mojo 1.1.0 (8189361e), llama.cpp `836d571`, diffu
 | **mojo-dllm** `--device gpu` | 221 | 18.13 | 2.2 s | 1.1 GB | Mojo |
 | llama.cpp `llama-diffusion-cli`, CUDA, all layers offloaded | 243 | 16.46 | 1.4 s | 5.3 GB | C/C++, CUDA |
 
-Step time of mojo-dllm over llama.cpp: median 0.906, range 0.896 to 0.908 across 9 paired runs. A ratio below 1 means mojo-dllm's step is shorter.
+Step time of mojo-dllm over llama.cpp: median 0.906, range 0.896 to 0.908 across 9 paired runs, with mojo-dllm's step shorter in 9 of them. A ratio below 1 means mojo-dllm's step is shorter.
 
 Versions: mojo-dllm `69e4024`, Mojo 1.1.0 (8189361e), llama.cpp `7df8b87`. Evidence: `bench/results/2026-11-03-gpu-llada.json`.
 
@@ -42,7 +42,7 @@ Versions: mojo-dllm `bdd268b`, Mojo 1.1.0 (8189361e), llama.cpp `836d571`. Evide
 | **mojo-dllm** `--device gpu` | 219 | 18.29 | 2.0 s | 1.2 GB | Mojo |
 | llama.cpp `llama-diffusion-cli`, CUDA, all layers offloaded | 214 | 18.66 | 1.3 s | 5.0 GB | C/C++, CUDA |
 
-Step time of mojo-dllm over llama.cpp: median 1.022, range 1.000 to 1.037 across 9 paired runs. A ratio below 1 means mojo-dllm's step is shorter.
+Step time of mojo-dllm over llama.cpp: median 1.022, range 1.000 to 1.037 across 9 paired runs, with mojo-dllm's step shorter in 1 of them. A ratio below 1 means mojo-dllm's step is shorter.
 
 Versions: mojo-dllm `69e4024`, Mojo 1.1.0 (8189361e), llama.cpp `7df8b87`. Evidence: `bench/results/2026-11-03-gpu-dream.json`.
 
@@ -111,10 +111,13 @@ neither runtime reports GPU memory. The GPU tables above come from these
 configs.
 
 The test GPU is a laptop part held to 30 W, whose clocks fall under
-sustained load (`bench/checks/2026-10-12-gpu-power-under-load.txt`) and vary
-from day to day: the same llama.cpp build ran
-LLaDA steps much slower on 2026-10-12 than on 2026-10-09 (compare
-`bench/results/archive/2026-10-09-gpu-llada.json` with the current file).
+sustained load (`bench/checks/2026-10-12-gpu-power-under-load.txt` and
+`bench/checks/2026-11-03-gpu-power-limit.txt`) and vary from day to day: the
+same llama.cpp build ran LLaDA steps much slower on 2026-10-12 than on
+2026-10-09 (compare `bench/results/archive/2026-10-09-gpu-llada.json` with
+`bench/results/archive/2026-10-12-gpu-llada.json`). The 2026-11-03 file
+records three builds run back to back at about 1.1 GHz and 30 W: absolute
+milliseconds follow the clock, and ratios inside one file do not.
 Both runtimes in one result file run interleaved, prompt by prompt, so
 compare them within a file, not across dates.
 
@@ -135,8 +138,10 @@ llama.cpp's `llama-bench` at the same token count).
 - on battery, where a laptop caps CPU and GPU power, it pauses before the
   next run until the charger is back, and a run the charger left midway is
   thrown away and repeated (`bench/power.py`; each run records
-  `power_waited_s`, `power_retries` and `on_battery`, and `--allow-battery`
-  measures on battery instead);
+  `power_waited_s`, `power_retries`, `on_battery`, `power_source` and a snapshot
+  of the supplies it read, and `--allow-battery` measures on battery instead).
+  The check fails closed: a supply file it cannot read stops the run, and a
+  battery with the adapter offline counts as battery whatever its status says;
 - a watchdog kills any `pytest` process (other work on the machine started
   test suites mid-run), and the kills are logged in the result file;
 - generation time excludes model loading, which is reported as startup;

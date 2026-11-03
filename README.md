@@ -65,7 +65,7 @@ Versions: mojo-dllm `bdd268b`, Mojo 1.1.0 (8189361e), llama.cpp `836d571`, diffu
 | **mojo-dllm** `--device gpu` | 221 | 18.13 | 2.2 s | 1.1 GB | Mojo |
 | llama.cpp `llama-diffusion-cli`, CUDA, all layers offloaded | 243 | 16.46 | 1.4 s | 5.3 GB | C/C++, CUDA |
 
-Step time of mojo-dllm over llama.cpp: median 0.906, range 0.896 to 0.908 across 9 paired runs. A ratio below 1 means mojo-dllm's step is shorter.
+Step time of mojo-dllm over llama.cpp: median 0.906, range 0.896 to 0.908 across 9 paired runs, with mojo-dllm's step shorter in 9 of them. A ratio below 1 means mojo-dllm's step is shorter.
 
 Versions: mojo-dllm `69e4024`, Mojo 1.1.0 (8189361e), llama.cpp `7df8b87`. Evidence: `bench/results/2026-11-03-gpu-llada.json`.
 
@@ -85,7 +85,7 @@ Versions: mojo-dllm `bdd268b`, Mojo 1.1.0 (8189361e), llama.cpp `836d571`. Evide
 | **mojo-dllm** `--device gpu` | 219 | 18.29 | 2.0 s | 1.2 GB | Mojo |
 | llama.cpp `llama-diffusion-cli`, CUDA, all layers offloaded | 214 | 18.66 | 1.3 s | 5.0 GB | C/C++, CUDA |
 
-Step time of mojo-dllm over llama.cpp: median 1.022, range 1.000 to 1.037 across 9 paired runs. A ratio below 1 means mojo-dllm's step is shorter.
+Step time of mojo-dllm over llama.cpp: median 1.022, range 1.000 to 1.037 across 9 paired runs, with mojo-dllm's step shorter in 1 of them. A ratio below 1 means mojo-dllm's step is shorter.
 
 Versions: mojo-dllm `69e4024`, Mojo 1.1.0 (8189361e), llama.cpp `7df8b87`. Evidence: `bench/results/2026-11-03-gpu-dream.json`.
 
@@ -117,10 +117,10 @@ runs, and mojo-dllm's forward pass alone stays ahead of `llama-bench`. The
 ablation row shows that skipping logits saves only a small part of the gap.
 On the GPU of the test laptop, the line under each GPU table compares
 mojo-dllm's step time with llama.cpp's CUDA build, run by run, and the peak RSS
-column shows the smaller host footprint that comes from keeping the weights in
-GPU memory. The laptop part is held to 30 W and its clocks vary from day to
-day, so compare the two runtimes inside one result file and do not carry
-absolute milliseconds across dates.
+column shows the smaller host footprint: mojo-dllm uploads the weights once and
+releases the file's pages behind it. The laptop part is held to 30 W and its
+clocks vary from day to day, so compare the two runtimes inside one result file
+and do not carry absolute milliseconds across dates.
 
 Every number in the tables above is rendered from a result file in
 `bench/results/`, and CI fails if a table and its file disagree. [Benchmarks](docs/benchmarks.md)

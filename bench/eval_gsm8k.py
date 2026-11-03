@@ -138,7 +138,8 @@ def cmd_run(args: argparse.Namespace, extra: list[str]) -> int:
         rec = dict(index=p["index"], gold=p["answer"], pred=pred, correct=pred == canon(p["answer"]),
                    forward_passes=j["forward_passes"], generate_s=j["generate_s"],
                    stopped_early=j.get("stopped_early"), text=j["text"], flags=flags, version=version,
-                   model=model, power_retries=pinfo["power_retries"], on_battery=pinfo["on_battery"])
+                   model=model, power_retries=pinfo["power_retries"], on_battery=pinfo["on_battery"],
+                   power_source=pinfo["power_source"])
         with out.open("a") as f:
             f.write(json.dumps(rec, ensure_ascii=False) + "\n")
         print(f"[{k + 1}/{len(problems)}] #{p['index']} {'ok ' if rec['correct'] else 'BAD'} "

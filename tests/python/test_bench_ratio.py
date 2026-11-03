@@ -26,9 +26,9 @@ def run(runtime, rep, prompt, ms, ok=True):
     return dict(runtime=runtime, rep=rep, prompt_index=prompt, ms_per_step=ms, ok=ok, cpu_busy_before=0.01)
 
 
-def summary(ms):
+def summary(ms, runs_ok=6):
     return dict(
-        runs_ok=3, runs_failed=0, ms_per_step_median=ms, tokens_per_s_median=128 / (32 * ms / 1000),
+        runs_ok=runs_ok, runs_failed=0, ms_per_step_median=ms, tokens_per_s_median=128 / (32 * ms / 1000),
         startup_s_median=2.0, peak_rss_gb_max=1.0, forward_ms_median=ms,
     )
 
@@ -39,7 +39,18 @@ class PairedRatioTests(unittest.TestCase):
         for rep, (mine, theirs) in enumerate([(90, 100), (80, 100), (95, 100)]):
             runs += [run("a", rep, 0, mine), run("b", rep, 0, theirs)]
         got = tables.paired_ratio(runs, "a", "b")
-        self.assertEqual((got.median, got.low, got.high, got.pairs), (0.90, 0.80, 0.95, 3))
+        self.assertEqual((got.median, got.low, got.high, got.pairs, got.below), (0.90, 0.80, 0.95, 3, 3))
+
+    def test_pairs_below_one_are_counted_even_when_they_print_as_one(self):
+        runs = [run("a", 0, 0, 99.98), run("b", 0, 0, 100), run("a", 1, 0, 101), run("b", 1, 0, 100)]
+        got = tables.paired_ratio(runs, "a", "b")
+        self.assertEqual((got.pairs, got.below), (2, 1))
+        self.assertEqual("%.3f" % got.low, "1.000")   # the three decimals hide it, the count does not
+
+    def test_a_repeated_rep_and_prompt_is_refused(self):
+        runs = [run("a", 0, 0, 10), run("a", 0, 0, 12), run("b", 0, 0, 20)]
+        with self.assertRaises(SystemExit):
+            tables.paired_ratio(runs, "a", "b")
 
     def test_numerator_is_the_first_runtime(self):
         runs = [run("a", 0, 0, 50), run("b", 0, 0, 100)]
@@ -93,6 +104,54 @@ class RenderedLineTests(unittest.TestCase):
     def test_gpu_table_carries_the_ratio_line(self):
         text = self.render(self.result(90, 100))
         self.assertIn("Step time of mojo-dllm over llama.cpp: median 0.900, range 0.900 to 0.900 across 6 paired runs", text)
+        self.assertIn("with mojo-dllm's step shorter in 6 of them", text)
+
+    def split(self, doc, names):
+        """One result file per runtime, as `run_bench.py --only` writes them."""
+        out = []
+        for name in names:
+            d = json.loads(json.dumps(doc))
+            d["runs"] = [r for r in d["runs"] if r["runtime"] == name]
+            d["summary"] = {name: d["summary"][name]}
+            out.append(d)
+        return out
+
+    def render_files(self, docs):
+        with TemporaryDirectory() as folder:
+            root = Path(folder)
+            (root / "bench/results").mkdir(parents=True)
+            for i, d in enumerate(docs):
+                (root / f"bench/results/{i}.json").write_text(json.dumps(d))
+            with patch.object(tables, "ROOT", root):
+                return tables.render()
+
+    def test_runtimes_from_two_result_files_get_no_ratio(self):
+        docs = self.split(self.result(90, 100), ["mojo-dllm-gpu", "llama.cpp-cuda"])
+        with self.assertRaises(SystemExit) as cm:
+            self.render_files(docs)
+        self.assertIn("different result files", str(cm.exception))
+
+    def test_a_table_whose_runtimes_never_finished_together_is_refused(self):
+        doc = self.result(90, 100)
+        for r in doc["runs"]:
+            r["ok"] = (r["rep"] % 2 == 0) == (r["runtime"] == "mojo-dllm-gpu")   # never both in one pair
+        doc["summary"]["mojo-dllm-gpu"]["runs_ok"] = 4
+        doc["summary"]["llama.cpp-cuda"]["runs_ok"] = 2
+        with self.assertRaises(SystemExit) as cm:
+            self.render(doc)
+        self.assertIn("no run finished in both runtimes", str(cm.exception))
+
+    def test_a_summary_that_disagrees_with_its_runs_is_refused(self):
+        doc = self.result(90, 100)
+        doc["summary"]["mojo-dllm-gpu"]["ms_per_step_median"] = 1.0
+        with self.assertRaises(SystemExit) as cm:
+            self.render(doc)
+        self.assertIn("ms_per_step_median", str(cm.exception))
+        doc = self.result(90, 100)
+        doc["summary"]["llama.cpp-cuda"]["runs_ok"] = 5
+        with self.assertRaises(SystemExit) as cm:
+            self.render(doc)
+        self.assertIn("runs_ok", str(cm.exception))
 
     def test_cpu_tables_do_not_get_one(self):
         doc = self.result(90, 100)

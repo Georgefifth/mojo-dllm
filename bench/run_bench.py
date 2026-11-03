@@ -406,7 +406,9 @@ def main() -> int:
                     r.update(runtime=rt, prompt_index=pi, rep=rep, started=t_start,
                              cpu_busy_before=round(load, 3), waited_s=round(waited, 1),
                              power_waited_s=round(pinfo["power_waited_s"], 1),
-                             power_retries=pinfo["power_retries"], on_battery=pinfo["on_battery"])
+                             power_retries=pinfo["power_retries"], on_battery=pinfo["on_battery"],
+                             power_source=pinfo["power_source"], power_supplies=pinfo["power_supplies"],
+                             **({"power_root": pinfo["power_root"]} if "power_root" in pinfo else {}))
                     results.append(r)
                     write_doc(partial=True)
                     if not r["ok"]:

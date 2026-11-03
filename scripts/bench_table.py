@@ -13,6 +13,7 @@ that was stopped) is refused, and so is a runtime that appears in two files.
 from __future__ import annotations
 
 import json
+import math
 import statistics
 import pathlib
 import sys
@@ -51,6 +52,18 @@ def is_gpu(doc: dict) -> bool:
     return kinds.pop()
 
 
+def check_summary(name: str, doc: dict) -> None:
+    """The table rows come from `summary`, the ratio line from `runs`: refuse a file in which they disagree."""
+    for rt, sm in doc["summary"].items():
+        ok = [r for r in doc["runs"] if r["runtime"] == rt and r.get("ok")]
+        if sm["runs_ok"] != len(ok):
+            raise SystemExit(f"bench_table: {name}: the summary of {rt} says runs_ok {sm['runs_ok']}, its runs hold {len(ok)}")
+        ms = [r["ms_per_step"] for r in ok if r.get("ms_per_step") is not None]
+        if ms and not math.isclose(sm["ms_per_step_median"], statistics.median(ms), rel_tol=1e-9):
+            raise SystemExit(f"bench_table: {name}: the summary of {rt} says ms_per_step_median "
+                             f"{sm['ms_per_step_median']}, its runs give {statistics.median(ms)}")
+
+
 def load() -> dict[str, dict]:
     """Result files grouped by model: {label: {merged, meta, sources}}."""
     files = sorted((ROOT / "bench" / "results").glob("*.json"))
@@ -66,8 +79,10 @@ def load() -> dict[str, dict]:
         gpu = is_gpu(doc)
         label = model_label(doc) + (" (GPU)" if gpu else "")
         g = groups.setdefault(label, dict(merged={}, meta={}, sources=[], gpu=gpu))
+        check_summary(f.name, doc)
         g["sources"].append(f.name)
         g.setdefault("runs", []).extend(doc["runs"])
+        g.setdefault("files", []).append((f.name, doc["runs"]))
         g.setdefault("busy_threshold", doc["config"].get("busy_threshold", 0.1))
         for rt, s in doc["summary"].items():
             if rt in g["merged"]:
@@ -155,6 +170,7 @@ class PairedRatio(NamedTuple):
     low: float
     high: float
     pairs: int
+    below: int
 
 
 def paired_ratio(runs: list[dict], num: str, den: str) -> PairedRatio | None:
@@ -162,11 +178,29 @@ def paired_ratio(runs: list[dict], num: str, den: str) -> PairedRatio | None:
     steps: dict[str, dict[tuple[int, int], float]] = {num: {}, den: {}}
     for r in runs:
         if r.get("ok") and r["runtime"] in steps and r.get("ms_per_step") is not None:
-            steps[r["runtime"]][(r["rep"], r["prompt_index"])] = r["ms_per_step"]
+            key = (r["rep"], r["prompt_index"])
+            if key in steps[r["runtime"]]:
+                raise SystemExit(f"bench_table: two runs of {r['runtime']} share rep {key[0]} and prompt {key[1]}")
+            steps[r["runtime"]][key] = r["ms_per_step"]
     ratios = [steps[num][k] / steps[den][k] for k in steps[num] if k in steps[den]]
     if not ratios:
         return None
-    return PairedRatio(statistics.median(ratios), min(ratios), max(ratios), len(ratios))
+    return PairedRatio(statistics.median(ratios), min(ratios), max(ratios), len(ratios), sum(1 for x in ratios if x < 1))
+
+
+def gpu_ratio(label: str, g: dict) -> PairedRatio | None:
+    """The ratio of one result file that measured both runtimes; refused when two files each hold one."""
+    names = ("mojo-dllm-gpu", "llama.cpp-cuda")
+    if not all(n in g["merged"] for n in names):
+        return None
+    both = [runs for _, runs in g["files"] if all(any(r["runtime"] == n and r.get("ok") for r in runs) for n in names)]
+    if not both:
+        raise SystemExit(f"bench_table: {label}: mojo-dllm-gpu and llama.cpp-cuda come from different result files; "
+                         "a ratio needs one run that measured both")
+    pr = paired_ratio(both[0], *names)
+    if pr is None:
+        raise SystemExit(f"bench_table: {label}: no run finished in both runtimes")
+    return pr
 
 
 def busy_note(runs: list[dict], threshold: float, rows: list) -> list[str]:
@@ -238,12 +272,13 @@ def render() -> str:
                 f"{s['startup_s_median']:.1f} s | {s['peak_rss_gb_max']:.1f} GB | {lang} |"
             )
         if g["gpu"]:
-            pr = paired_ratio(g["runs"], "mojo-dllm-gpu", "llama.cpp-cuda")
+            pr = gpu_ratio(label, g)
             if pr:
                 out += [
                     "",
                     f"Step time of mojo-dllm over llama.cpp: median {pr.median:.3f}, range {pr.low:.3f} to "
-                    f"{pr.high:.3f} across {pr.pairs} paired runs. A ratio below 1 means mojo-dllm's step is shorter.",
+                    f"{pr.high:.3f} across {pr.pairs} paired runs, with mojo-dllm's step shorter in {pr.below} of "
+                    "them. A ratio below 1 means mojo-dllm's step is shorter.",
                 ]
         v = meta["versions"]
         out += [

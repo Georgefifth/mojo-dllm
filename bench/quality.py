@@ -64,6 +64,7 @@ def main() -> int:
                 prompt=prompt, steps=steps, tokens_per_step=args.gen / steps, generate_s=j["generate_s"],
                 ms_per_step=j["ms_per_step"], repeated_words=repeated_words(j["text"]), text=j["text"],
                 arch=j.get("arch", "llada"), power_retries=pinfo["power_retries"], on_battery=pinfo["on_battery"],
+                power_source=pinfo["power_source"],
             ))
             print(f"steps {steps:4d}  {j['generate_s']:7.1f} s  repeats {rows[-1]['repeated_words']}  {j['text'][:80]!r}")
     git = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "--short", "HEAD"], capture_output=True, text=True)
