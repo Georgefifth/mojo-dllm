@@ -16,6 +16,7 @@ import json
 import statistics
 import pathlib
 import sys
+from typing import NamedTuple
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 TARGETS = [ROOT / "README.md", ROOT / "docs" / "benchmarks.md", ROOT / "docs" / "correctness.md"]
@@ -149,6 +150,25 @@ def fairness() -> str:
     return "\n".join(out)
 
 
+class PairedRatio(NamedTuple):
+    median: float
+    low: float
+    high: float
+    pairs: int
+
+
+def paired_ratio(runs: list[dict], num: str, den: str) -> PairedRatio | None:
+    """ms / step of runtime `num` over `den`, for each (rep, prompt) in which both finished."""
+    steps: dict[str, dict[tuple[int, int], float]] = {num: {}, den: {}}
+    for r in runs:
+        if r.get("ok") and r["runtime"] in steps and r.get("ms_per_step") is not None:
+            steps[r["runtime"]][(r["rep"], r["prompt_index"])] = r["ms_per_step"]
+    ratios = [steps[num][k] / steps[den][k] for k in steps[num] if k in steps[den]]
+    if not ratios:
+        return None
+    return PairedRatio(statistics.median(ratios), min(ratios), max(ratios), len(ratios))
+
+
 def busy_note(runs: list[dict], threshold: float, rows: list) -> list[str]:
     """Disclose runs that started on a busy CPU, with medians over the quiet ones.
 
@@ -217,6 +237,14 @@ def render() -> str:
                 f"| {row_label} | {s['ms_per_step_median']:,.0f} | {s['tokens_per_s_median']:.2f} | "
                 f"{s['startup_s_median']:.1f} s | {s['peak_rss_gb_max']:.1f} GB | {lang} |"
             )
+        if g["gpu"]:
+            pr = paired_ratio(g["runs"], "mojo-dllm-gpu", "llama.cpp-cuda")
+            if pr:
+                out += [
+                    "",
+                    f"Step time of mojo-dllm over llama.cpp: median {pr.median:.3f}, range {pr.low:.3f} to "
+                    f"{pr.high:.3f} across {pr.pairs} paired runs. A ratio below 1 means mojo-dllm's step is shorter.",
+                ]
         v = meta["versions"]
         out += [
             "",

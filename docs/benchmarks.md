@@ -22,6 +22,8 @@ Versions: mojo-dllm `bdd268b`, Mojo 1.1.0 (8189361e), llama.cpp `836d571`, diffu
 | **mojo-dllm** `--device gpu` | 221 | 18.13 | 2.2 s | 1.1 GB | Mojo |
 | llama.cpp `llama-diffusion-cli`, CUDA, all layers offloaded | 243 | 16.46 | 1.4 s | 5.3 GB | C/C++, CUDA |
 
+Step time of mojo-dllm over llama.cpp: median 0.906, range 0.896 to 0.908 across 9 paired runs. A ratio below 1 means mojo-dllm's step is shorter.
+
 Versions: mojo-dllm `69e4024`, Mojo 1.1.0 (8189361e), llama.cpp `7df8b87`. Evidence: `bench/results/2026-11-03-gpu-llada.json`.
 
 **Dream-v0-Instruct-7B**, Q4_K_M. 13th Gen Intel(R) Core(TM) i5-13420H, 12 threads, 33.3 GB RAM, `performance` power profile. Each prompt: 128 generated tokens, 32 denoising steps; median of 3 runs x 3 prompts.
@@ -39,6 +41,8 @@ Versions: mojo-dllm `bdd268b`, Mojo 1.1.0 (8189361e), llama.cpp `836d571`. Evide
 |---|---:|---:|---:|---:|---|
 | **mojo-dllm** `--device gpu` | 219 | 18.29 | 2.0 s | 1.2 GB | Mojo |
 | llama.cpp `llama-diffusion-cli`, CUDA, all layers offloaded | 214 | 18.66 | 1.3 s | 5.0 GB | C/C++, CUDA |
+
+Step time of mojo-dllm over llama.cpp: median 1.022, range 1.000 to 1.037 across 9 paired runs. A ratio below 1 means mojo-dllm's step is shorter.
 
 Versions: mojo-dllm `69e4024`, Mojo 1.1.0 (8189361e), llama.cpp `7df8b87`. Evidence: `bench/results/2026-11-03-gpu-dream.json`.
 
@@ -192,12 +196,11 @@ Evidence: `bench/eval/2026-10-29-baseline-vs-dualcache.json`, `bench/eval/2026-1
   tokens/s depends on the step count you choose, so compare ms / step first.
 - The ablation row shows what computing logits only for candidate positions
   saves.
-- On the GPU, read ms / step and peak RSS together. In the 2026-11-03 files a
-  LLaDA step takes 0.91 times as long in mojo-dllm as in llama.cpp (nine
-  paired runs, ratios 0.896 to 0.908) and a Dream step 1.02 times as long
-  (1.000 to 1.037). mojo-dllm also holds far less in host memory, because it
-  uploads the weights once and releases the file's pages behind it. One GPU
-  and one quantization (Q4_K_M) back these ratios.
+- On the GPU, read ms / step, the step-time ratio line under each GPU table
+  and peak RSS together. The ratio pairs the two runtimes run by run, and one
+  GPU with one quantization (Q4_K_M) stands behind it. mojo-dllm also holds
+  far less in host memory, because it uploads the weights once and releases
+  the file's pages behind it.
 - The thread sweep and the forward-pass-alone tables test the CPU comparison.
   If llama.cpp ran faster below 12 threads, or mojo-dllm's lead came only from
   skipping logits, those tables would show it. The sweep stops at 12 because

@@ -62,6 +62,8 @@ Versions: mojo-dllm `bdd268b`, Mojo 1.1.0 (8189361e), llama.cpp `836d571`, diffu
 | **mojo-dllm** `--device gpu` | 221 | 18.13 | 2.2 s | 1.1 GB | Mojo |
 | llama.cpp `llama-diffusion-cli`, CUDA, all layers offloaded | 243 | 16.46 | 1.4 s | 5.3 GB | C/C++, CUDA |
 
+Step time of mojo-dllm over llama.cpp: median 0.906, range 0.896 to 0.908 across 9 paired runs. A ratio below 1 means mojo-dllm's step is shorter.
+
 Versions: mojo-dllm `69e4024`, Mojo 1.1.0 (8189361e), llama.cpp `7df8b87`. Evidence: `bench/results/2026-11-03-gpu-llada.json`.
 
 **Dream-v0-Instruct-7B**, Q4_K_M. 13th Gen Intel(R) Core(TM) i5-13420H, 12 threads, 33.3 GB RAM, `performance` power profile. Each prompt: 128 generated tokens, 32 denoising steps; median of 3 runs x 3 prompts.
@@ -79,6 +81,8 @@ Versions: mojo-dllm `bdd268b`, Mojo 1.1.0 (8189361e), llama.cpp `836d571`. Evide
 |---|---:|---:|---:|---:|---|
 | **mojo-dllm** `--device gpu` | 219 | 18.29 | 2.0 s | 1.2 GB | Mojo |
 | llama.cpp `llama-diffusion-cli`, CUDA, all layers offloaded | 214 | 18.66 | 1.3 s | 5.0 GB | C/C++, CUDA |
+
+Step time of mojo-dllm over llama.cpp: median 1.022, range 1.000 to 1.037 across 9 paired runs. A ratio below 1 means mojo-dllm's step is shorter.
 
 Versions: mojo-dllm `69e4024`, Mojo 1.1.0 (8189361e), llama.cpp `7df8b87`. Evidence: `bench/results/2026-11-03-gpu-dream.json`.
 
@@ -108,16 +112,15 @@ On the CPU, mojo-dllm is the fastest runtime in these tables. The fairness
 runs check that lead: llama.cpp is fastest at 12 threads, the most this CPU
 runs, and mojo-dllm's forward pass alone stays ahead of `llama-bench`. The
 ablation row shows that skipping logits saves only a small part of the gap.
-On the GPU of the test laptop, a LLaDA step takes 0.91 times as long as
-llama.cpp's CUDA build (in each of nine paired runs the ratio sits between
-0.90 and 0.91), and a Dream step takes 1.02 times as long (1.00 to 1.04). The
-peak host memory is 1.1 GB against 5.3 GB for LLaDA and 1.2 GB against 5.0 GB
-for Dream, because the weights live in GPU memory. The laptop part is held to 30 W and its clocks vary from day to
+On the GPU of the test laptop, the line under each GPU table compares
+mojo-dllm's step time with llama.cpp's CUDA build, run by run, and the peak RSS
+column shows the smaller host footprint that comes from keeping the weights in
+GPU memory. The laptop part is held to 30 W and its clocks vary from day to
 day, so compare the two runtimes inside one result file and do not carry
 absolute milliseconds across dates.
 
-Every number above is rendered from a result file in `bench/results/`, and CI
-fails if the table and the file disagree. [Benchmarks](docs/benchmarks.md)
+Every number in the tables above is rendered from a result file in
+`bench/results/`, and CI fails if a table and its file disagree. [Benchmarks](docs/benchmarks.md)
 explains the setup, including why each runtime's schedule differs and what
 the ablation row measures.
 
@@ -202,7 +205,7 @@ files whose tensors are F32, Q4_K or Q6_K.
 | Tokenizer, diffusion sampler, `mojo-dllm run` | done |
 | CPU optimization and benchmark report | two rounds done |
 | Dream-7B (GQA, QKV bias, shifted logits, its sampler) | done |
-| NVIDIA backend (int8 tensor cores) | done on `main`: LLaDA step 0.91x of llama.cpp CUDA, Dream 1.02x, on an RTX 3050 Laptop |
+| NVIDIA backend (int8 tensor cores) | done on `main`, compared with llama.cpp CUDA in the GPU tables |
 | GPU kernel tuning | in progress |
 | Inter-step caching, block diffusion | research |
 
