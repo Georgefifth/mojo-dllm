@@ -35,8 +35,9 @@ semantic versioning (0.y: minor bumps may break things).
   `bench/profiles/2026-10-27-argmax-*`, `bench/checks/2026-10-27-argmax-*`).
 - Generation stops once the printed answer is final (an end-of-text token
   after a fully committed answer). The output is identical; `--no-early-stop`
-  runs every step, and the harnesses pass it so comparisons stay step for
-  step.
+  runs every step, and the benchmark, parity, quality and profiling harnesses
+  pass it so comparisons stay step for step. The GSM8K evaluation leaves early
+  stop on.
 - `scripts/gpu_profile.py` (per-kernel device time from an Nsight Systems
   trace), `bench/bench_gpu_gemm.mojo`, and `bench/eval_gsm8k.py`, a paired
   GSM8K-200 evaluation for changes that are not exact.
@@ -57,7 +58,7 @@ semantic versioning (0.y: minor bumps may break things).
 - `bench/config-gpu.json` and `bench/config-dream-gpu.json`, against
   llama.cpp built with CUDA, and their results. Results record runs that
   started on a busy CPU, and the tables give the quiet-run medians next to
-  them. The first results (2026-10-12) had llama.cpp's CUDA build faster than
+  them. The first results (2026-10-09) had llama.cpp's CUDA build faster than
   `--device gpu` on the RTX 3050 tested; the kernel work since then reverses
   that for LLaDA (see Changed).
 - Fairness runs for the CPU comparison: llama.cpp is fastest at 12 threads,
@@ -66,6 +67,10 @@ semantic versioning (0.y: minor bumps may break things).
 
 ### Changed
 
+- The toolchain comes from uv (`uv sync --frozen`, `uv.lock`) instead of pixi, and
+  the `./mojo-dllm` launcher wraps `setup`, `pull`, `run` and `doctor`. The
+  binary exits 2 on a usage error and names the flag, command or value that
+  is wrong.
 - The GPU benchmark tables are refreshed against llama.cpp `7df8b87` (issue
   #15), on mains power, one result file per table
   (`bench/results/2026-11-03-*`; the 2026-10-12 files moved to

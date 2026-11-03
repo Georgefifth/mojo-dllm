@@ -8,8 +8,8 @@
    GGUF reader    tokenizer     diffusion loop
    (mmap)         (BPE)         (diffusion/sampler.mojo)
         |                            |
-        |                       LLaDA forward
-        |                       (models/llada.mojo)
+        |                       model forward
+        |                       (models/transformer.mojo)
         |                            |
         +----> repacked weights ---> quantized GEMM, RMSNorm, RoPE,
                (kernels/packed.mojo)  attention, SwiGLU (kernels/)
@@ -37,9 +37,9 @@
 For a canvas of L tokens and a list of positions whose logits the caller
 needs:
 
-1. Embedding rows are decoded from the memory-mapped Q4_K table, one row per
-   token.
-2. For each of 32 layers: RMSNorm, then the activations are quantized to int8
+1. Embedding rows are decoded from the memory-mapped embedding table (Q4_K in
+   a Q4_K_M file), one row per token.
+2. For each layer (32 in LLaDA-8B): RMSNorm, then the activations are quantized to int8
    once and reused by the Q, K and V projections. RoPE rotates Q and K;
    attention runs over all L positions with no mask; the output projection
    and residual follow. The FFN quantizes once for gate and up, applies SiLU,
@@ -55,9 +55,10 @@ the longest canvas the run will use.
 The GGUF file is memory-mapped. At load, every projection matrix is repacked
 into a heap block (see [The quantized GEMM](kernels.md)) and its mapped pages
 are released, so the model is resident once. Q4_K stays 4-bit after
-repacking. Q6_K expands to one byte per weight, which costs about 0.3 GB on
-LLaDA-8B and buys a simpler inner loop. The embedding table and norm vectors
-stay mapped and fault in as needed.
+repacking. Q6_K expands to one byte per weight, which costs about 0.4 GB on
+LLaDA-8B and buys a simpler inner loop. The embedding table stays mapped and
+faults in as needed. Norm vectors and biases are decoded into f32 arrays at
+load.
 
 ## Threads
 
