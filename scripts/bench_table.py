@@ -238,20 +238,26 @@ def render() -> str:
 
 
 def parity() -> tuple[str, str]:
-    """Logit and generation parity tables, one section per architecture and device (newest file each)."""
+    """Keep the newest run of each (architecture, device, model)."""
     files = sorted((ROOT / "bench" / "parity").glob("*.json"))
     if not files:
         raise SystemExit("bench_table: no parity evidence under bench/parity")
-    newest: dict[tuple[str, str], tuple[pathlib.Path, dict]] = {}
+    newest: dict[tuple[str, str, str], tuple[pathlib.Path, dict]] = {}
     for f in files:
         doc = json.loads(f.read_text())
-        newest[(doc.get("arch", "llada"), doc.get("device", "cpu"))] = (f, doc)
+        arch = doc.get("arch", "llada")
+        key = (arch, doc.get("device", "cpu"), doc.get("model", arch))
+        previous = newest.get(key)
+        # A legacy name and a new model-qualified name can coexist on one day.
+        # Their lexical order does not tell us which run happened last.
+        if previous is None or (doc["date"], f.name) > (previous[1]["date"], previous[0].name):
+            newest[key] = (f, doc)
     lg: list[str] = []
     gn: list[str] = []
-    for key in sorted(newest, key=lambda k: (k[0] != "llada", k[0], k[1] != "cpu")):
-        arch, device = key
+    for key in sorted(newest, key=lambda k: (k[0] != "llada", k[0], k[1] != "cpu", k[1], k[2])):
+        arch, device, model = key
         f, doc = newest[key]
-        name = doc.get("model", arch) + (", GPU" if device == "gpu" else "")
+        name = model + (", GPU" if device == "gpu" else "")
         src = f"`bench/parity/{f.name}` (mojo-dllm `{doc['versions']['mojo-dllm']}`)"
         if lg:
             lg.append("")
