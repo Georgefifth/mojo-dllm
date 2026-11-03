@@ -21,7 +21,7 @@
 |---|---|
 | `src/main.mojo`, `src/cli/` | command line: `run`, `tokenize`, `inspect`, `logits` |
 | `src/mojo_dllm/formats/gguf.mojo` | GGUF v2/v3 reader over a memory map, bounds-checked |
-| `src/mojo_dllm/quant/kquants.mojo` | scalar F32 / F16 / BF16 / Q8_0 / Q4_K / Q5_K / Q6_K decoders (the test oracle, and embedding rows) |
+| `src/mojo_dllm/quant/kquants.mojo` | scalar F32 / F16 / BF16 / Q5_0 / Q8_0 / Q4_K / Q5_K / Q6_K decoders (the test oracle, and embedding rows) |
 | `src/mojo_dllm/kernels/packed.mojo` | weights repacked 8 rows per SIMD register; the GEMM used for every projection |
 | `src/mojo_dllm/kernels/qgemm.mojo` | activation quantization (int8, one scale per 256) and a row-major reference GEMM |
 | `src/mojo_dllm/kernels/ops.mojo` | RMSNorm, NORM and NEOX RoPE, bidirectional attention, SwiGLU |

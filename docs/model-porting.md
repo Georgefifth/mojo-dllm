@@ -72,7 +72,7 @@ check at the top of `ModelConfig.__init__` lists the supported names). Reuse
 the load with `unsupported GGUF tensor type: <type> (tensor <name>)` when no
 decoder exists. A decodable type without a matrix kernel reports
 `tensor <name> is <type>: matrix kernels exist for Q4_K and Q6_K`.
-Reference decoders accept F32, F16, BF16, Q8_0, Q4_K, Q5_K and Q6_K for
+Reference decoders accept F32, F16, BF16, Q5_0, Q8_0, Q4_K, Q5_K and Q6_K for
 embedding rows and vectors; matrix kernels still require Q4_K or Q6_K.
 Add the decoder and packed kernel with fixtures from `scripts/gen_fixtures.py`
 before advertising a new matrix type as supported end to end.

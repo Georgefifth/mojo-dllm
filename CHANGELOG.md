@@ -12,6 +12,9 @@ semantic versioning (0.y: minor bumps may break things).
   headers, with LLaDA/Dream name mapping and a standalone self-test.
 - Q8_0 and Q5_K reference decoders, with GGUF type sizing and reference tests
   for Q8_0, Q5_K and BF16. Matrix kernel support remains Q4_K and Q6_K.
+- A Q5_0 reference decoder (22-byte blocks of 32 weights) with GGUF type sizing,
+  a reference test against gguf-py's decoder and a hand-built block test of the
+  high-bit layout. It is the first piece of the DiffusionGemma reader (#61).
 - Fused elementwise kernels on the GPU: the residual add, the RMSNorm and the
   activation quantization run as one launch (three per layer boundary plus
   the first norm), and `silu(g) * u` is quantized in the same launch as the

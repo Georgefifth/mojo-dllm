@@ -5,7 +5,7 @@ not share code with.
 
 ## 1. Formats and kernels (unit tests, every commit)
 
-- GGUF parsing, Q4_K / Q5_K / Q6_K / Q8_0 / F16 / BF16 decoding: compared with the `gguf` Python
+- GGUF parsing, Q4_K / Q5_K / Q6_K / Q5_0 / Q8_0 / F16 / BF16 decoding: compared with the `gguf` Python
   package's dequantization on fixtures it generated (max abs difference
   1e-6).
 - Both GEMMs: compared with an f64 reference over the same dequantized
