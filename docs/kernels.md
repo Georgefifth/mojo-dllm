@@ -130,13 +130,22 @@ padded block is 12 bytes larger than the 212-byte padding it replaces: with
 6,217,728 Q6_K blocks in LLaDA-8B Q4_K_M (output, 16 attn_v and 16 ffn_down
 tensors) that is 74.6 MB (71.2 MiB) more device memory.
 
-**Tile width per call.** Unpacking a weight tile costs the same however
-many tokens then use it, so the widest tile that saves a tile wins: a
-148-token canvas runs two 80-wide tiles rather than five 32-wide ones, and
-each weight tile is unpacked twice instead of five times. The LM head's 32
-rows keep the 32-wide tile. 80 is the widest tile whose shared memory fits
-the 48 KiB a kernel gets without asking for more. Token tiles of one weight
-tile run back to back, so they read it through L2.
+**Tile width per call.** The default rule minimizes token tiles, breaking
+ties toward the narrower width. RTX Blackwell (compute capability major 12)
+uses a shape-aware rule for Q4_K: start from that default, then choose the
+narrowest width that does not increase the estimated number of block waves
+across the device's SMs. The estimate assumes one resident block per SM;
+it is a dispatch heuristic, not an occupancy measurement. It can trade more
+blocks for less work within each block when a wide GPU has spare parallelism.
+Q6_K and other device families keep their existing rule. The SM count is read
+when activation buffers are created, not on every GEMM call.
+
+The LM head's small row count still uses the narrow tile. The available token
+widths remain 32, 64 and 80; 80 is the widest whose shared memory fits the
+48 KiB static allocation limit. Weight layout, activation quantization and
+accumulation order are unchanged. Token tiles of one weight tile run back to
+back, so they read it through L2. The exact cross-width GPU test also covers
+ragged token counts and partial weight-row tiles.
 
 **Shared-memory layout.** Weight rows are 272 bytes apart, so the 8 rows a
 fragment load reads fall in different banks. Activation scales are stored
