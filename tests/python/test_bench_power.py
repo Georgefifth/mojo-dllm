@@ -240,10 +240,24 @@ def test_a_failed_read_while_the_run_is_going_fails_the_run(tmp_path: Path, monk
 
     def flaky(root: Path = tmp_path) -> bool | None:
         state["n"] += 1
-        if state["n"] > 3:
+        if state["n"] == 3:   # one failed sample; the read at the end of the run succeeds
             raise power.PowerReadError("cannot read " + str(root))
         return real(root)
 
     monkeypatch.setattr(power, "on_battery", flaky)
     with pytest.raises(power.PowerReadError):
         power.run_on_mains(lambda: time.sleep(0.2), root=tmp_path, sample_s=0.01, log=lambda m: None)
+
+
+def test_allowing_battery_records_a_run_that_started_unplugged_even_if_the_sampler_missed_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    states = iter([True])   # the state before the run; every later read says mains
+
+    def scripted(root: Path = tmp_path) -> bool | None:
+        return next(states, False)
+
+    monkeypatch.setattr(power, "on_battery", scripted)
+    monkeypatch.setattr(power, "snapshot", lambda root=tmp_path: {})
+    _, info = power.run_on_mains(lambda: None, root=tmp_path, allow_battery=True, sample_s=10, log=lambda m: None)
+    assert info["on_battery"] is True and info["power_source"] == "battery"
