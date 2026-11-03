@@ -10,7 +10,7 @@
   <a href="https://github.com/vladimirrott/mojo-dllm/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/vladimirrott/mojo-dllm/ci.yml?branch=main&style=flat-square&label=CI" alt="CI"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue?style=flat-square" alt="License: Apache-2.0"></a>
   <img src="https://img.shields.io/badge/Mojo-1.1.0-ff6b1a?style=flat-square" alt="Mojo 1.1.0">
-  <img src="https://img.shields.io/badge/models-LLaDA--8B%20%7C%20Dream--7B-5eead4?style=flat-square" alt="Models: LLaDA-8B, Dream-7B">
+  <img src="https://img.shields.io/badge/models-LLaDA--8B%20%7C%20LLaDA--1.5%20%7C%20Dream--7B%20%7C%20Dream--Coder%20%7C%20DiffuCoder--cpGRPO-5eead4?style=flat-square" alt="Models: LLaDA-8B, LLaDA-1.5, Dream-7B, Dream-Coder, DiffuCoder-cpGRPO">
 </p>
 
 <p align="center">
@@ -26,9 +26,12 @@
   <img src="assets/demo.gif" width="760" alt="mojo-dllm --visual: LLaDA-8B fills a canvas of masked tokens over 16 denoising steps, padding first, then a haiku">
 </p>
 
-mojo-dllm runs **LLaDA-8B** and **Dream-7B**, two diffusion language models,
-from quantized GGUF files on your CPU or on an NVIDIA GPU. The GGUF reader,
-the tokenizer, the quantized matrix multiply, the GPU kernels, the transformer
+mojo-dllm runs **LLaDA-8B-Instruct**, **LLaDA-1.5**, **Dream-v0-Instruct-7B**,
+**Dream-Coder-v0-Instruct-7B** and **DiffuCoder-7B-cpGRPO** from quantized GGUF
+files. LLaDA-8B and Dream-v0 have CPU and NVIDIA GPU evidence; the added
+checkpoints have CPU smoke and [parity results](docs/correctness.md).
+
+The GGUF reader, the tokenizer, the quantized matrix multiply, the GPU kernels, the transformer
 and the denoising loop are all Mojo. You need no Python at runtime, and the
 GPU is optional.
 

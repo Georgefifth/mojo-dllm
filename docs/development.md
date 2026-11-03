@@ -31,6 +31,7 @@ The hooks run `scripts/ci-local.sh --fast` before each commit (hygiene scan,
 | eval self-test | `uv run --no-project python bench/eval_gsm8k.py --self-test` | answer extraction or the paired statistics break, or `gsm8k-200.jsonl` is not 200 rows with numeric answers |
 | checker self-test | `uv run --only-group fixtures python scripts/check_weights.py --self-test` | a safetensors or index guard in `check_weights.py` stops rejecting its case, or stops naming it |
 | no GPU | `scripts/check_no_gpu.sh` | `--device gpu` without a GPU does anything but exit 1 with a message |
+| visual options | `scripts/check_visual.sh` | an invalid `--visual-interval` does not exit 1 with a message naming the flag before model loading |
 | GPU tests | `scripts/run-gpu-tests.sh` (local only) | a GPU kernel or the GPU forward pass disagrees with the CPU or the f32 reference, or the count differs from `tests/gpu/test-count.txt` |
 
 GitHub's runners have no GPU, so CI builds the GPU suite without running it.
@@ -112,6 +113,30 @@ On the development laptop the GPU is capped at 30 W and its clocks drop under
 sustained load (`bench/checks/2026-10-12-gpu-power-under-load.txt`), so
 compare kernels with interleaved runs (A, B, A, B) in one session rather than
 against a number from another day.
+
+### Comparing GPU dispatch changes
+
+`bench/compare_gpu.py` compares two already-built checkouts through
+`run_bench.run_mojo`, interleaving A/B and B/A rounds on one assigned GPU.
+It excludes a warmup pair per generation length, records every raw run, and
+rejects failures or mismatched forward counts and canvas sizes. It leaves the
+system power profile and other processes alone. Keep each pair on the same
+GPU; another GPU can run a different model's independent comparison.
+
+```bash
+python3 bench/compare_gpu.py --base ../base --new . --model MODEL.gguf \
+  --gpu GPU-UUID --lengths 128,256,512 --reps 3 --prompts 3 \
+  --out bench/results/dispatch/run.json
+CUDA_VISIBLE_DEVICES=GPU-UUID python3 bench/check_gpu_dispatch.py \
+  --base ../base --new . --model MODEL.gguf --arch llada \
+  --out bench/checks/dispatch-exact.json
+```
+
+Use `--arch dream` for Dream. The exact check uses that model's mask token,
+compares all finite logit values byte for byte at several canvas sizes, and
+compares complete generated token lists. It checks preservation of the base
+GPU computation, not correctness against an independent runtime. The timing
+comparison runs without the synchronizing `MOJO_DLLM_GPU_PROFILE` mode.
 
 ### Quality
 
