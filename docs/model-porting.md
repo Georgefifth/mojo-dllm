@@ -1,7 +1,10 @@
 # Porting a model
 
-mojo-dllm supports LLaDA and Dream. This checklist is the path Dream took,
-which is the path the next model will take.
+mojo-dllm supports the LLaDA and Dream architectures. Tested Q4_K_M checkpoints
+are LLaDA-8B-Instruct, LLaDA-1.5, Dream-v0-Instruct-7B,
+Dream-Coder-v0-Instruct-7B and DiffuCoder-7B-cpGRPO. The added checkpoints have
+CPU smoke and [parity evidence](correctness.md); GPU evidence remains limited
+to LLaDA-8B and Dream-v0. This checklist follows the path Dream took.
 
 ## 1. Read the metadata
 
