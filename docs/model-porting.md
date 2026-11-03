@@ -66,7 +66,8 @@ inspect the metadata and tensor types before running the model.
 
 ## 2. Load the weights
 
-Add a config struct and a weight loader beside `models/llada.mojo`. Reuse
+Extend `ModelConfig` and `Layer` in `models/transformer.mojo` (the architecture
+check at the top of `ModelConfig.__init__` lists the supported names). Reuse
 `PackedMatrix` for every projection. A tensor type it does not support stops
 the load with `unsupported GGUF tensor type: <type> (tensor <name>)` when no
 decoder exists. A decodable type without a matrix kernel reports
@@ -102,8 +103,7 @@ input. Shape agreement does not establish matching weights or logits.
 1. Extend `scripts/gen_fixtures.py` with a tiny model of the new layout and
    its numpy reference logits. Write the test first and watch it fail.
 2. On the real model, compare logits with llama.cpp through
-   `tools/ref/llada_ref.cpp` (`logits` mode) and
-   `scripts/compare_logits.py`.
+   `tools/ref/llada_ref.cpp` (`logits` mode) and `bench/parity.py`.
 
 ## 4. Tokenizer
 

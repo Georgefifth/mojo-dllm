@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# ci-local.sh: run the same gates as .github/workflows/ci.yml on your machine.
+# ci-local.sh: run the gates of .github/workflows/ci.yml on your machine (the GPU
+# suite runs here when a GPU is present; CI only builds it).
 #
 #   scripts/ci-local.sh                 everything
 #   scripts/ci-local.sh --fast          hygiene + format + build (the pre-commit set)

@@ -20,20 +20,21 @@ The GPU has its own suite, `tests/gpu/test_gpu.mojo`, which runs on a machine
 with an NVIDIA GPU (`scripts/run-gpu-tests.sh`; CI only builds it). It checks
 each GPU kernel against the CPU function it replaces, the int8 `mma` fragment
 layout against a CPU matmul, and the GPU forward pass of both tiny models
-against the numpy reference with a 2% bound on both models.
+against the numpy reference, with a 5% bound on LLaDA (attention runs in f16) and
+2% on Dream, and the same argmax as the CPU path on every position.
 
 ## 2. Tokenizer (unit tests, every commit)
 
 36 strings covering English, contractions, numbers, accents, combining marks,
 CJK, Cyrillic, Arabic, Devanagari, emoji, CRLF, non-breaking and em spaces,
 code, and LLaDA's chat-template special tokens. Every id matches
-`llama-tokenize` on the real LLaDA GGUF, and decoding restores the input
-byte for byte.
+`llama-tokenize` on the real LLaDA GGUF and on the real Dream GGUF, and decoding
+restores the input byte for byte.
 
 ## 3. Logits on the real model
 
 `tools/ref/llada_ref.cpp` links libllama and dumps llama.cpp's logits for a
-fixed token sequence; `mojo-dllm logits` dumps ours; `scripts/compare_logits.py`
+fixed token sequence; `mojo-dllm logits` dumps ours; `bench/parity.py`
 compares them. The sections marked GPU run `mojo-dllm logits --device gpu`.
 
 The GPU sections also compare against llama.cpp built with CUDA. That build
@@ -255,3 +256,9 @@ uv run --only-group fixtures python bench/parity.py --arch dream --threads 4 --m
 uv run --only-group fixtures python bench/parity.py --arch dream --threads 4 --model models/DiffuCoder-7B-cpGRPO.Q4_K_M.gguf
 uv run --no-project python scripts/bench_table.py --write
 ```
+
+The GPU tables need `--device gpu` and a second reference. Compile
+`llada_ref` once more against the CUDA build of llama.cpp (`build-cuda/`, see
+[Development](development.md#benchmarks)), name the result
+`build/llada_ref_cuda`, and add `--device gpu --ref2 build/llada_ref_cuda` to
+the `bench/parity.py` commands.
