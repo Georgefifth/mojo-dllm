@@ -88,9 +88,16 @@ Without `:QUANT`, a repo resolves to its Q4_K_M file, then Q8_0, then the
 first `.gguf` it lists, the order llama.cpp uses. A quant that matches nothing
 lists the files the repo has. Split (sharded) GGUF files are not supported.
 
-mojo-dllm runs LLaDA and Dream GGUF files made by llama.cpp's converter.
-Another architecture downloads and then stops with an error naming the
-architecture.
+Tested Q4_K_M checkpoints are LLaDA-8B-Instruct, LLaDA-1.5,
+Dream-v0-Instruct-7B, Dream-Coder-v0-Instruct-7B and DiffuCoder-7B-cpGRPO.
+The added checkpoints were checked on CPU; pass `--device cpu` to reproduce
+those runs. See the smoke and [parity evidence](correctness.md) for the exact
+files and generation agreement.
+Other quantizations still need compatible tensor types. An unsupported
+architecture stops with an error naming it.
+
+For DiffuCoder, obtain the file separately under its `apple-amlr` license and
+pass its local path with `--model`; it is not bundled with the project.
 
 `./mojo-dllm pull MODEL` downloads without generating. Models live in the
 Hugging Face cache (`~/.cache/huggingface/hub`, or `$HF_HUB_CACHE`), shared
