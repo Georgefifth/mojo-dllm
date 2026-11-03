@@ -1,8 +1,8 @@
 # The quantized GEMM
 
 Most of a denoising step is matrix multiplication: seven projections per
-layer, 32 layers, every step, over the whole canvas. `run --verbose` prints
-the split for your machine. This page explains the
+layer, 32 layers in LLaDA-8B, every step (without `--dual-cache`), over the
+whole canvas. `run --verbose` prints the split for your machine. This page explains the
 kernel that does it.
 
 ## The shape of the problem
@@ -45,9 +45,9 @@ stores `q + 32`, and the 32 comes off the same way.
 
 ## Tiling and threads
 
-A work item is 16 output rows. It walks the tokens 4 at a time, keeping 4
-int32 and 4 f32 accumulators in registers, so each loaded weight vector feeds 4
-tokens. Items go to threads through an atomic counter (see
+A work item is 16 output rows. It walks the tokens 8 at a time for Q4_K and 4
+at a time for Q6_K, keeping that many int32 and f32 accumulators in registers,
+so each loaded weight vector feeds 8 or 4 tokens. Items go to threads through an atomic counter (see
 [Architecture](architecture.md#threads)).
 
 ## Checks
@@ -106,7 +106,8 @@ arithmetic is unchanged, so the logits are too
 removing staging saved about 120 ms of the GEMM and removing the mma 4 to
 7 ms, both measured against the integer-accumulation variant
 (`bench/checks/2026-10-13-gemm-cost-split.json`). The packed layout (128-row
-blocks) took that harness from 258.7 to 215.1 ms without a breakdown of the
+blocks) took that harness from 258.2 to 215.0 ms (median of three runs, `v3_vs_base`
+in the same file) without a breakdown of the
 staging share. The loop still copied a super-block, waited at a barrier, and
 only then computed. Now each thread
 reads super-block b + 1 from global memory into registers (weights,
@@ -147,17 +148,17 @@ accumulation order are unchanged. Token tiles of one weight tile run back to
 back, so they read it through L2. The exact cross-width GPU test also covers
 ragged token counts and partial weight-row tiles.
 
-**Shared-memory layout.** Weight rows are 272 bytes apart, so the 8 rows a
-fragment load reads fall in different banks. Activation scales are stored
-by sub-block, then token, then (scale, sum), so the pair of tokens a thread
-folds after an mma is one 128-bit load, and the scale rows are padded to 9
-and 17 floats for the same reason.
+**Shared-memory layout.** Rows are padded so the 8 rows a fragment load reads
+fall in different banks: activation rows are 272 bytes apart (256 plus 16),
+Q4_K nibble rows 144 bytes (128 plus 16) and Q6_K block rows 240 bytes (224
+plus 16). Activation scales are stored by sub-block, then token, then (scale,
+sum), so the pair of tokens a thread folds after an mma is one 128-bit load.
 `tests/gpu/test_gpu.mojo` checks the fragment layout against a CPU matmul
 on random int8 matrices, and the whole kernel against an f64 GEMM.
 
 **Row statistics on the device.** A greedy step needs, per masked row, the
-argmax and a confidence. Copying the logits to the host (32 rows of 126,464
-floats for a 32-token block) and looping over them there is the largest piece
+argmax and a confidence. Copying the logits to the host (in LLaDA, 32 rows of
+126,464 floats for a 32-token block) and looping over them there is the largest piece
 of a step outside the forward pass. One block per row now reads its logits
 twice: the first pass finds the first index of the maximum (a tie goes to the
 smaller index, as the host loop picks it), the second accumulates, in f64,

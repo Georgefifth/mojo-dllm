@@ -16,6 +16,10 @@ Outputs (deterministic, seed 1234 unless noted):
   tests/fixtures/tiny-llada.gguf   2-layer LLaDA-shaped model, hidden 256, vocab 512
   tests/fixtures/tiny-llada.expected.f32
                                    numpy reference logits for TINY_TOKENS, row-major [L, vocab]
+  tests/fixtures/tiny-dream.gguf   2-layer Dream-shaped model (GQA, QKV bias) and its numpy logits
+  tests/fixtures/tiny-dream.expected.f32
+  tests/fixtures/malformed/        one-byte-damaged GGUF headers and metadata
+  tests/fixtures/metadata/         valid and invalid ModelConfig metadata
 """
 
 from __future__ import annotations

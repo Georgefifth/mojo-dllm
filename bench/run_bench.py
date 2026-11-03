@@ -11,7 +11,9 @@ identical in shape.
 
 Measurement hygiene, all recorded in the output:
   * runs are interleaved (A B C, A B C, ...) so drift hits every runtime;
-  * each run starts only when the 1-minute load average is below a threshold;
+  * each run starts when a two-second sample shows the CPU under `busy_threshold`
+    busy, or after `max_quiet_wait_s` seconds; the busy fraction is recorded as
+    `cpu_busy_before`;
   * a watchdog kills any process named exactly `pytest` while the benchmark
     runs (other sessions on this machine launch test suites that would
     otherwise compete for the CPU) and logs every kill. A config can turn it

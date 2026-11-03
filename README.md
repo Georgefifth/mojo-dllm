@@ -32,13 +32,14 @@ files. LLaDA-8B and Dream-v0 have CPU and NVIDIA GPU evidence; the added
 checkpoints have CPU smoke and [parity results](docs/correctness.md).
 
 The GGUF reader, the tokenizer, the quantized matrix multiply, the GPU kernels, the transformer
-and the denoising loop are all Mojo. You need no Python at runtime, and the
-GPU is optional.
+and the denoising loop are all Mojo. The `build/mojo-dllm` binary needs no
+Python at runtime, and the GPU is optional. The `./mojo-dllm` launcher that
+builds and starts it is a Python script run by uv.
 
 A diffusion model does not write left to right. It starts from a canvas of
 masked tokens and, over a fixed number of steps, commits the tokens it is most
-sure about until none are left. Every step reruns the whole model over the
-whole canvas, so the runtime problem looks like a stream of GEMMs. mojo-dllm
+sure about until none are left. By default every step reruns the whole model
+over the whole canvas, so the runtime problem looks like a stream of GEMMs. mojo-dllm
 is built around that.
 
 ## Benchmarks
@@ -140,7 +141,7 @@ git clone https://github.com/vladimirrott/mojo-dllm && cd mojo-dllm
 builds `build/mojo-dllm`, offers to download LLaDA-8B (4.9 GB, sha256
 checked) and runs a short smoke test. A second `setup` skips the build and
 the download when they are current. `./mojo-dllm doctor` reports what is
-missing and the command that fixes it.
+missing and how to fix it (a missing GPU says that the CPU will be used).
 
 You need Linux on x86-64 with AVX2, glibc 2.34 or newer, and about 6 GB of
 free memory. `run` picks an NVIDIA GPU with compute capability 8.0 or newer
@@ -171,8 +172,9 @@ models, offline use, `inspect`, `tokenize` and the flags.
   once an end-of-text token follows a fully committed answer, no later step
   can change the printed text. mojo-dllm stops there, with the same output.
 - **Logits only where the sampler looks.** A step needs logits for the masked
-  positions of the current block alone, so the 126 464-way output projection
-  runs on those rows.
+  positions the sampler can commit: the current block for LLaDA, every masked
+  position of the canvas for Dream. The output projection (126 464 columns for
+  LLaDA, 152 064 for Dream) runs on those rows.
 - **Each model's own sampler.** LLaDA's blocks and low-confidence remasking
   follow its `generate.py`; Dream's timestep schedule and entropy ranking
   follow its `diffusion_generate`.
@@ -199,7 +201,8 @@ that reproduce it.
 
 Version 0.1 runs on the CPU. Since then, `main` also runs on NVIDIA GPUs
 (`--device gpu`, compute capability 8.0 and newer). Both run LLaDA-8B and Dream-7B from GGUF
-files whose tensors are F32, Q4_K or Q6_K.
+files whose projection matrices are Q4_K or Q6_K. The embedding table and the
+norm and bias vectors may be F32, F16, BF16, Q8_0 or Q5_K as well.
 
 | Milestone | State |
 |---|---|
@@ -210,10 +213,12 @@ files whose tensors are F32, Q4_K or Q6_K.
 | Dream-7B (GQA, QKV bias, shifted logits, its sampler) | done |
 | NVIDIA backend (int8 tensor cores) | done on `main`, compared with llama.cpp CUDA in the GPU tables |
 | GPU kernel tuning | in progress |
-| Inter-step caching, block diffusion | research |
+| Inter-step K/V cache (`--dual-cache`, LLaDA) | on `main`, opt in, not exact |
+| Block diffusion models | research |
 
-The [plan](docs/plan.md) lists what the original
-[specification](docs/spec.md) got wrong and how the code handles it.
+The [plan](docs/plan.md) lists seven corrections to the original
+[specification](docs/spec.md) and how the code handles each.
+[Architecture](docs/architecture.md#source-map) maps the source as built.
 
 ## Contributing
 
@@ -222,7 +227,7 @@ Start with [CONTRIBUTING.md](CONTRIBUTING.md). The short version:
 ```bash
 uv sync --frozen
 scripts/ci-local.sh --install-hooks   # pre-commit: fast gates, pre-push: all of them
-scripts/ci-local.sh                   # what CI runs
+scripts/ci-local.sh                   # the CI gates, plus the GPU tests when a GPU is present
 ```
 
 ## License
@@ -232,4 +237,7 @@ Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 mojo-dllm builds with Modular's Mojo toolchain. The compiler and standard
 library sources are Apache-2.0 with LLVM exceptions; the prebuilt packages and
 runtime libraries that `uv sync` fetches ship under Modular's own terms,
-summarized in NOTICE. LLaDA is by GSAI-ML and released under MIT.
+summarized in NOTICE. LLaDA is by GSAI-ML and released under MIT. Dream-v0 is by
+Dream-org and released under Apache-2.0. DiffuCoder-7B-cpGRPO carries Apple's
+`apple-amlr` license and is not bundled (see the
+[quick start](docs/quickstart.md)).

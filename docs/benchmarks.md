@@ -131,9 +131,13 @@ llama.cpp's `llama-bench` at the same token count).
 
 `bench/run_bench.py` does the measuring:
 
-- three prompts, three repetitions, runtimes interleaved within each
-  repetition;
-- every run starts only when the CPU has been under 10% busy for two seconds;
+- three prompts and, by default, three repetitions (the fairness configs use
+  one prompt, and the CPU thread sweep ran two repetitions), runtimes
+  interleaved within each repetition;
+- every run waits until a two-second sample shows the CPU under 10% busy, and
+  starts anyway after 300 seconds (60 in the fairness configs); the busy
+  fraction before each run is recorded as `cpu_busy_before`, and the tables
+  disclose runs that started above the threshold;
 - the power profile is `performance` for the duration and restored after;
 - on battery, where a laptop caps CPU and GPU power, it pauses before the
   next run until the charger is back, and a run the charger left midway is
@@ -172,7 +176,8 @@ Evidence: `bench/quality/2026-10-03-LLaDA-8B-Instruct.Q4_K_M.json` (mojo-dllm `b
 <!-- quality:end -->
 
 "Repeated words" counts immediate repetitions such as "the the", a rough
-proxy for parallel-decoding damage. `bench/quality.py` produces this table.
+proxy for parallel-decoding damage. `bench/quality.py` records the runs and
+`scripts/bench_table.py` renders this table.
 
 ### Accuracy of `--threshold` and `--dual-cache`
 
