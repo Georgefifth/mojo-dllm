@@ -45,7 +45,7 @@ minutes](diffusion.md) walks through it with a picture.
   `unsupported tokenizer model: gemma4` (#62), on the CPU and the GPU. `logits`
   reaches the model and stops with `diffusion-gemma has no forward pass yet`.
   Other architectures stop with
-  `unsupported model architecture: <name> (supported: llada, dream, diffusion-gemma)`.
+  `unsupported model architecture: <name> (runs: llada, dream; read only: diffusion-gemma)`.
 - One quantization mix: Q4_K and Q6_K projection matrices, as in a Q4_K_M
   file, with an embedding table and norm vectors that the reference decoders
   read (F32, F16, BF16, Q8_0, Q4_K, Q5_K, Q6_K). A matrix of any other type

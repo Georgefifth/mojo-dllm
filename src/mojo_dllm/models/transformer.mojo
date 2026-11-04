@@ -141,7 +141,7 @@ struct ModelConfig(Copyable, ImplicitlyCopyable, Movable):
             raise Error(
                 "unsupported model architecture: "
                 + self.arch
-                + " (supported: llada, dream, "
+                + " (runs: llada, dream; read only: "
                 + GEMMA_ARCH
                 + ")"
             )
