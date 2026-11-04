@@ -14,8 +14,6 @@ on:
 
 permissions:
   contents: read
-  pages: write
-  id-token: write
 
 concurrency:
   group: pages
@@ -54,6 +52,11 @@ jobs:
   deploy:
     if: github.event.repository.visibility == 'public'
     needs: build
+    # deploy-pages needs these two and nothing else. A job-level block replaces
+    # the workflow-level one, so contents is none here (this job has no checkout).
+    permissions:
+      pages: write
+      id-token: write
     runs-on: ubuntu-24.04
     environment:
       name: github-pages
