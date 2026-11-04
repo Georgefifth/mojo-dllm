@@ -244,11 +244,3 @@ P V without leaving the registers. On LLaDA-8B the logits stay as close to
 the f32 CPU path as with f32 attention
 (`bench/checks/2026-10-13-attention-f16-logits.json`). The kernel never
 stores a score row, so the canvas length has no fixed limit.
-
-On compute capability 12 devices, head dimension 128, at least 512 queries
-and keys, and at least four query heads per KV head select a 128-query,
-128-key staging tile with 256 threads and 68 KiB of shared memory. The
-cooperative loads are wider, while softmax and P V still update in the same
-32-key order. Other shapes and device families keep the original tile.
-The exact-output test launches both tiles directly on any GPU whose opt-in
-shared-memory limit can hold the larger tile; it reports a skip otherwise.
