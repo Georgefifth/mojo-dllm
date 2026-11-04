@@ -700,6 +700,27 @@ def test_run_renoises_and_draws_in_the_references_order() raises:
     assert_equal(second[3], renoise[3], "rejected position takes the renoise")
 
 
+def test_run_uses_the_given_t_min_t_max_and_confidence() raises:
+    # Logits [0, 3.4] as in the schedule test; numpy (f64) puts the first step
+    # from step 2 on whose mean entropy is under the threshold at:
+    #   defaults (0.4, 0.8, 0.005)  step 43
+    #   (0.3, 0.6, 0.02)           step 4
+    #   t_min back at 0.4           step 6
+    #   t_max back at 0.8           step 22
+    #   confidence back at 0.005    step 24
+    # so each of the three values moves the stop step on its own.
+    var step = _step(_two_way_exact(3.4), _two_way_exact(3.4))
+    var m = ScriptedModel(2, [step.copy()])
+    var prompt: List[Int] = [1]
+    var c = _cfg(2)
+    c.eb_t_min = 0.3
+    c.eb_t_max = 0.6
+    c.eb_confidence = 0.02
+    var res = _run(m, prompt, c)
+    assert_equal(res.steps_taken, 4)
+    assert_equal(res.stop_reason, "converged")
+
+
 def test_run_asks_the_model_for_the_canvas_rows_only() raises:
     var vocab = 4
     var step = _step(_one_hot(vocab, 2), _one_hot(vocab, 1))
@@ -811,6 +832,7 @@ def test_bad_tunables_are_refused_by_name() raises:
     c.eb_t_max = -1.0
     with assert_raises(contains="--eb-t-max"):
         _ = _run(m, prompt, c)
+    c = _cfg(1)
     c = _cfg(1)
     c.eb_bound = -0.1
     with assert_raises(contains="--eb-bound"):
