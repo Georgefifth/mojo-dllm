@@ -15,6 +15,15 @@ semantic versioning (0.y: minor bumps may break things).
 - A Q5_0 reference decoder (22-byte blocks of 32 weights) with GGUF type sizing,
   a reference test against gguf-py's decoder and a hand-built block test of the
   high-bit layout. It is the first piece of the DiffusionGemma reader (#61).
+- A `diffusion-gemma` branch of `ModelConfig` reads the DiffusionGemma
+  metadata (per-layer sliding/global pattern and K/V head counts, head sizes and
+  RoPE bases per kind, experts, canvas length, soft cap) and checks the tensor
+  directory against it: `attn_v` exactly on sliding layers, K width, the 3-D
+  expert tensors and the rope table. A wrong key or tensor is refused by name,
+  as are non-zero `attention.shared_kv_layers` and
+  `embedding_length_per_layer_input`. `inspect` prints the config. `DiffusionLM`
+  and the GPU model stop on these files: there is no forward pass yet (#61).
+  The key names come from the unmerged ggml-org/llama.cpp#24423.
 - Fused elementwise kernels on the GPU: the residual add, the RMSNorm and the
   activation quantization run as one launch (three per layer boundary plus
   the first norm), and `silu(g) * u` is quantized in the same launch as the
