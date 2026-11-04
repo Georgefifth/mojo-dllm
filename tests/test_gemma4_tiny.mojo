@@ -241,5 +241,103 @@ def test_tiny_end_of_generation_ids() raises:
     assert_equal(_show(eog), "[1, 6, 8]")
 
 
+def test_tiny_the_first_and_last_byte_tokens_are_required() raises:
+    # The byte loop covers 0 to 255 whole: a vocabulary without <0x00> or
+    # <0xFF> is refused as one without <0x78> is.
+    with assert_raises(contains="no byte token <0x00>"):
+        _ = _tok("no-byte-00.gguf")
+    with assert_raises(contains="no byte token <0xFF>"):
+        _ = _tok("no-byte-ff.gguf")
+
+
+def test_tiny_a_merge_whose_only_space_is_its_first_byte_is_named() raises:
+    # llama.cpp splits a merge at the first space after its first byte, so " ab"
+    # has none, although it has a space.
+    with assert_raises(
+        contains="tokenizer.ggml.merges[3] = ' ab' has no space"
+    ):
+        _ = _tok("merge-space-first.gguf")
+
+
+def test_tiny_a_special_id_equal_to_the_vocabulary_size_is_named() raises:
+    # 279 tokens have ids 0 to 278; bos-out-of-range holds 293, this one 279.
+    with assert_raises(
+        contains=(
+            "tokenizer.ggml.bos_token_id is 279, outside the vocabulary of 279"
+            " tokens"
+        )
+    ):
+        _ = _tok("bos-at-vocab-size.gguf")
+
+
+def test_tiny_the_longest_special_token_is_cut_first() raises:
+    # Id 279 is the user-defined text "<|turn><turn|>", which holds the ids 5 and
+    # 6. Cut longest first it is one token; cut shortest first, or in id order,
+    # the two inside it are found first and it never matches.
+    var tok = _tok("nested-special.gguf")
+    assert_equal(tok.vocab_size(), 280)
+    _check(tok, "<|turn><turn|>", [279])
+    _check(tok, "a<|turn><turn|>b", [266, 279, 267])
+    # Where the long text is not there, the short ones are cut as before.
+    _check(tok, "<|turn>a<turn|>", [5, 266, 6])
+    _check(tok, "<turn|><|turn>", [6, 5])
+
+
+def test_tiny_an_unknown_token_is_cut_from_the_text() raises:
+    # <unk> has token type 2 here, and llama.cpp cuts control, user-defined and
+    # unknown tokens out of the text alike.
+    var tok = _tok("unknown-type.gguf")
+    assert_equal(tok.unk_id, 3)
+    _check(tok, "<unk>", [3])
+    _check(tok, "a<unk>b", [266, 3, 267])
+
+
+def test_tiny_an_unknown_token_is_dropped_when_special_tokens_are_skipped() raises:
+    # token_to_piece drops unknown and control tokens unless asked to print them.
+    var tok = _tok("unknown-type.gguf")
+    assert_equal(tok.decode([3]), "")
+    assert_equal(tok.decode([266, 3, 267]), "ab")
+    assert_equal(tok.decode([3], skip_special=False), "<unk>")
+    assert_equal(tok.decode([266, 3, 267], skip_special=False), "a<unk>b")
+
+
+def test_tiny_eos_is_a_control_token_whatever_the_file_says() raises:
+    # The file types <eos> as a normal token. llama.cpp overrides it to control
+    # (it ends generation): it is cut from the text and not printed.
+    var tok = _tok("forced-control.gguf")
+    _check(tok, "<eos>", [1])
+    assert_equal(tok.decode([1]), "")
+    assert_equal(tok.decode([1], skip_special=False), "<eos>")
+
+
+def test_tiny_end_of_turn_is_a_control_token_whatever_the_file_says() raises:
+    # The same for <turn|>, which the file also types as normal.
+    var tok = _tok("forced-control.gguf")
+    _check(tok, "<turn|>", [6])
+    assert_equal(tok.decode([6]), "")
+    assert_equal(tok.decode([6], skip_special=False), "<turn|>")
+
+
+def test_tiny_end_of_generation_ids_are_listed_once() raises:
+    # EOS is <turn|> itself here, so the list is [6, 8], not [6, 6, 8].
+    var tok = _tok("eos-is-end-of-turn.gguf")
+    assert_equal(tok.eos_id, 6)
+    assert_equal(tok.eot_id, 6)
+    assert_equal(_show(tok.eog_ids()), "[6, 8]")
+    assert_true(tok.is_eog(6) and tok.is_eog(8))
+    assert_true(not tok.is_eog(1))
+
+
+def test_tiny_end_of_generation_skips_tokens_the_vocabulary_lacks() raises:
+    # Neither <turn|> nor <|tool_response> is in this vocabulary: only EOS ends
+    # generation, and -1 (no token) does not.
+    var tok = _tok("no-end-of-turn.gguf")
+    assert_equal(tok.eot_id, -1)
+    assert_equal(_show(tok.eog_ids()), "[1]")
+    assert_true(tok.is_eog(1))
+    assert_true(not tok.is_eog(-1))
+    assert_true(not tok.is_eog(6) and not tok.is_eog(8))
+
+
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

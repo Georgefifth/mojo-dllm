@@ -883,6 +883,39 @@ def gemma4_tiny() -> None:
     empty[-1] = ""
     write("empty-token.gguf", add_bos=True, tokens=empty)
 
+    def with_entries(*changes: tuple[int, str | None, int | None]):
+        """The tokens and types with some entries replaced: (index, new text or None, new type or None)."""
+        changed_tokens, changed_types = list(tokens), list(types)
+        for index, text, kind in changes:
+            if text is not None:
+                changed_tokens[index] = text
+            if kind is not None:
+                changed_types[index] = kind
+        return changed_tokens, changed_types
+
+    # Unusual rather than wrong, each read by a test in tests/test_gemma4_tiny.mojo.
+    for byte in (0x00, 0xFF):
+        # The ends of the byte range: a loop that starts at 1 or stops at 254 would not see them missing.
+        t, k = with_entries((GEMMA4_TINY_BYTE0 + byte, f"[0x{byte:02X}]", 1))
+        write(f"no-byte-{byte:02x}.gguf", add_bos=False, tokens=t, types=k)
+    # llama.cpp splits a merge at the first space after its first byte, so " ab" has no space to split at.
+    write("merge-space-first.gguf", add_bos=False, merges=merges[:3] + [" ab"] + merges[3:])
+    # An id equal to the vocabulary size is one past the last token.
+    write("bos-at-vocab-size.gguf", add_bos=True, ids={"bos": len(tokens)})
+    # A user-defined token whose text holds two other special tokens: only the longest-first order finds it.
+    write("nested-special.gguf", add_bos=False, tokens=tokens + ["<|turn><turn|>"], types=types + [4])
+    # <unk> typed unknown (2) instead of control (3).
+    t, k = with_entries((3, None, 2))
+    write("unknown-type.gguf", add_bos=False, tokens=t, types=k)
+    # <eos> and <turn|> typed normal (1): llama.cpp overrides them to control because they end generation.
+    t, k = with_entries((1, None, 1), (6, None, 1))
+    write("forced-control.gguf", add_bos=False, tokens=t, types=k)
+    # EOS is the end-of-turn token itself: the end-of-generation list must hold its id once.
+    write("eos-is-end-of-turn.gguf", add_bos=False, ids={"eos": 6})
+    # No <turn|> and no <|tool_response>: nothing for the end-of-generation list to add beyond EOS.
+    t, k = with_entries((6, "<end>", None), (8, "<tool_result>", None))
+    write("no-end-of-turn.gguf", add_bos=False, tokens=t, types=k)
+
 
 def entropy_rows() -> None:
     """Logits rows with the entropy-bounded denoiser's per-row answers in f64.
