@@ -20,6 +20,7 @@ Outputs (deterministic, seed 1234 unless noted):
   tests/fixtures/tiny-dream.expected.f32
   tests/fixtures/malformed/        one-byte-damaged GGUF headers and metadata
   tests/fixtures/metadata/         valid and invalid ModelConfig metadata
+  tests/fixtures/entropy-rows.tsv  logits rows with numpy f64 argmax, entropy and inverse-CDF draws, seed 65065
 """
 
 from __future__ import annotations
@@ -488,8 +489,57 @@ def main() -> None:
     dequant_types()
     unsupported_embedding()
     metadata_cases()
+    entropy_rows()
     for p in sorted(OUT.iterdir()):
         print(f"{p.stat().st_size:>9}  {p.relative_to(ROOT)}")
+
+
+def entropy_rows() -> None:
+    """Logits rows with the entropy-bounded denoiser's per-row answers in f64.
+
+    One line per case: name, vocab, temperature, draw u, argmax of the raw row,
+    entropy of softmax(row / temperature) in nats, the token an inverse-CDF
+    draw at u picks (first index whose cumulative probability reaches u), and
+    the row as float32 values written with enough digits to read back exactly.
+    A separate seed keeps every other fixture's bytes where they were.
+    """
+    rng = np.random.default_rng(65065)
+    cases = []
+
+    def add(name, row, temperature, u):
+        cases.append((name, row.astype(np.float32), temperature, u))
+
+    add("mixed40", rng.normal(0, 3, 40), 0.8, 0.37)
+    tie = rng.normal(0, 1, 12)
+    tie[3] = tie[9] = 5.0
+    add("ties", tie, 0.5, 0.9)
+    peaked = rng.normal(0, 0.5, 64)
+    peaked[41] = 25.0
+    add("peaked", peaked, 0.4 + 0.4 / 48, 0.5)
+    add("flat30", np.zeros(30), 0.8, 0.55)
+    wide = rng.normal(0, 4, 2500)
+    wide[2300] = 14.0
+    add("wide2500", wide, 0.6, 0.81)
+    add("ascending3000", np.linspace(-10, 10, 3000), 0.7, 0.2)
+    add("exact1024", rng.normal(0, 2, 1024), 0.8, 0.5)
+    add("large-negative", -1000.0 + rng.normal(0, 3, 50), 0.8, 0.66)
+    add("u-low", rng.normal(0, 3, 40), 0.8, 1e-9)
+    add("u-high", rng.normal(0, 3, 40), 0.8, 0.999999)
+    lines = []
+    for name, row, t, u in cases:
+        x = row.astype(np.float64) / t
+        p = np.exp(x - x.max())
+        p /= p.sum()
+        nz = p[p > 0]
+        entropy = float(-(nz * np.log(nz)).sum())
+        cum = np.cumsum(p)
+        sampled = int(np.searchsorted(cum, u, side="left"))
+        # An answer that sits within rounding of a boundary would test rounding.
+        assert np.abs(cum - u).min() > 1e-7, name
+        argmax = int(np.argmax(row))
+        values = " ".join(repr(float(v)) for v in row)
+        lines.append(f"{name}\t{len(row)}\t{t!r}\t{u!r}\t{argmax}\t{entropy!r}\t{sampled}\t{values}")
+    (OUT / "entropy-rows.tsv").write_text("\n".join(lines) + "\n")
 
 
 def unsupported_embedding() -> None:

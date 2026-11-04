@@ -5,6 +5,8 @@
                        [--remasking low_confidence|random] [--threshold P] [--dual-cache]
                        [--no-chat] [--full-logits] [--no-early-stop] [--visual] [--visual-interval N] [--verbose]
                        [--dump-step-stats] [--json]
+                       [--eb-steps N] [--eb-t-min T] [--eb-t-max T] [--eb-bound B]
+                       [--eb-stability N] [--eb-confidence C]
     mojo-dllm tokenize --model M --prompt TEXT [--no-chat]
     mojo-dllm inspect  MODEL.gguf
     mojo-dllm logits   --model M --tokens 1,2,3 --rows 0,2 --out logits.f32 [--threads N] [--device cpu|gpu]
@@ -21,6 +23,7 @@ from cli.visual import CanvasPrinter
 from mojo_dllm.formats.gguf import GGUFFile, GGUF_TYPE_ARRAY
 from mojo_dllm.diffusion.sampler import (
     GenConfig,
+    GenResult,
     generate_observed,
 )
 from mojo_dllm.gpu.model import GpuDiffusionLM
@@ -76,6 +79,12 @@ def command_spec(command: String) raises -> CommandSpec:
                 "threads",
                 "device",
                 "visual-interval",
+                "eb-steps",
+                "eb-t-min",
+                "eb-t-max",
+                "eb-bound",
+                "eb-stability",
+                "eb-confidence",
             ],
             boolean_flags(),
             ["model", "prompt"],
@@ -107,7 +116,10 @@ def command_usage(command: String) raises -> String:
             " P] [--dual-cache]\n"
             + "                [--no-chat] [--full-logits] [--no-early-stop]"
             " [--visual] [--visual-interval N] [--verbose]"
-            " [--dump-step-stats] [--json]"
+            " [--dump-step-stats] [--json]\n"
+            + "                [--eb-steps 48] [--eb-t-min 0.4] [--eb-t-max"
+            " 0.8] [--eb-bound 0.1]\n"
+            + "                [--eb-stability 1] [--eb-confidence 0.005]"
         )
     if command == "tokenize":
         return "  mojo-dllm tokenize --model M --prompt TEXT [--no-chat]"
@@ -188,7 +200,15 @@ def _number_problems(a: Args) raises -> String:
     Run before any model is mapped: `--steps abc` and `--threads 0` are
     wrong whatever the model is.
     """
-    for flag in ["max-tokens", "steps", "block-length", "threads", "seed"]:
+    for flag in [
+        "max-tokens",
+        "steps",
+        "block-length",
+        "threads",
+        "seed",
+        "eb-steps",
+        "eb-stability",
+    ]:
         if not a.has(flag):
             continue
         var raw = a.values[flag]
@@ -197,8 +217,30 @@ def _number_problems(a: Args) raises -> String:
             n = Int(raw)
         except:
             return "flag --" + flag + " needs an integer, got '" + raw + "'"
-        if flag != "seed" and n < 1:
+        if flag == "eb-stability":
+            if n < 0:
+                return "flag --" + flag + " must be at least 0, got " + raw
+        elif flag != "seed" and n < 1:
             return "flag --" + flag + " must be at least 1, got " + raw
+    for flag in ["eb-t-min", "eb-t-max", "eb-bound", "eb-confidence"]:
+        if not a.has(flag):
+            continue
+        var raw = a.values[flag]
+        var x = Float64(0)
+        var parsed = True
+        try:
+            x = Float64(raw)
+        except:
+            parsed = False
+        if not parsed or not isfinite(x):
+            return (
+                "flag --" + flag + " needs a finite number, got '" + raw + "'"
+            )
+        if flag == "eb-t-max":
+            if x <= 0:
+                return "flag --" + flag + " must be above 0, got " + raw
+        elif x < 0:
+            return "flag --" + flag + " must be at least 0, got " + raw
     if a.has("temperature"):
         var raw = a.values["temperature"]
         var t = Float64(0)
@@ -373,6 +415,45 @@ def cmd_tokenize(a: Args) raises:
     print("[" + s + "]")
 
 
+def eb_flags() -> List[String]:
+    """The flags only DiffusionGemma's entropy-bounded denoiser reads."""
+    return [
+        "eb-steps",
+        "eb-t-min",
+        "eb-t-max",
+        "eb-bound",
+        "eb-stability",
+        "eb-confidence",
+    ]
+
+
+def check_arch_flags(a: Args, arch: String) raises:
+    """Refuse a flag the model's architecture ignores: a run that quietly
+    takes another number of steps than asked for is a wrong answer."""
+    if arch == "diffusion-gemma":
+        if a.has("steps"):
+            raise Error(
+                "--steps does not apply to diffusion-gemma; use --eb-steps"
+            )
+        return
+    for flag in eb_flags():
+        if a.has(flag):
+            raise Error(
+                "--" + flag + " applies to diffusion-gemma only, not " + arch
+            )
+
+
+def stop_json(res: GenResult) -> String:
+    """The JSON members that say how many steps ran and why the run ended."""
+    return (
+        ', "steps_taken": '
+        + String(res.steps_taken)
+        + ', "stop_reason": "'
+        + res.stop_reason
+        + '"'
+    )
+
+
 def cmd_run(a: Args) raises:
     var interval: Int
     try:
@@ -395,8 +476,17 @@ def cmd_run(a: Args) raises:
     cfg.full_logits = a.has("full-logits")
     cfg.dual_cache = a.has("dual-cache")
     cfg.threads = threads
+    cfg.eb_steps = a.int_or("eb-steps", cfg.eb_steps)
+    cfg.eb_t_min = a.float_or("eb-t-min", cfg.eb_t_min)
+    cfg.eb_t_max = a.float_or("eb-t-max", cfg.eb_t_max)
+    cfg.eb_bound = a.float_or("eb-bound", cfg.eb_bound)
+    cfg.eb_stability = a.int_or("eb-stability", cfg.eb_stability)
+    cfg.eb_confidence = a.float_or("eb-confidence", cfg.eb_confidence)
     var t0 = perf_counter_ns()
     var g = GGUFFile(a.get("model"))
+    check_arch_flags(a, g.architecture())
+    if g.architecture() == "diffusion-gemma":
+        cfg.steps = cfg.eb_steps
     var tok = Tokenizer(g)
     var prompt = encode_prompt(tok, g.architecture(), a)
     _ = g^
@@ -475,6 +565,21 @@ def _run[
                 "  schedule: Dream timesteps, eps",
                 cfg.eps,
             )
+        elif model.config().arch == "diffusion-gemma":
+            print(
+                "diffusion steps: at most",
+                cfg.eb_steps,
+                "  entropy bound:",
+                cfg.eb_bound,
+                "  temperature:",
+                cfg.eb_t_max,
+                "down to",
+                cfg.eb_t_min,
+                "  stop: stable for",
+                cfg.eb_stability,
+                "and mean entropy below",
+                cfg.eb_confidence,
+            )
         else:
             print(
                 "diffusion steps:",
@@ -543,6 +648,7 @@ def _run[
             + ("true" if res.stopped_early else "false")
             + ', "forward_passes": '
             + String(res.forward_passes)
+            + stop_json(res)
             + ', "load_s": '
             + String(model.load_time())
             + ', "tokenizer_s": '
