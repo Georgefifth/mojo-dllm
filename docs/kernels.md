@@ -178,7 +178,7 @@ narrowest width that does not increase the estimated number of block waves
 across the device's SMs. The estimate assumes one resident block per SM;
 it is a dispatch heuristic, not an occupancy measurement. It can trade more
 blocks for less work within each block when a wide GPU has spare parallelism.
-Q6_K and other device families keep their existing rule. The SM count is read
+Other device families keep their existing rule. The SM count is read
 when activation buffers are created, not on every GEMM call.
 
 The LM head's small row count still uses the narrow tile. The available token
@@ -187,6 +187,15 @@ widths remain 32, 64 and 80; 80 is the widest whose shared memory fits the
 accumulation order are unchanged. Token tiles of one weight tile run back to
 back, so they read it through L2. The exact cross-width GPU test also covers
 ragged token counts and partial weight-row tiles.
+
+Q6_K on compute capability 12 also offers a 16-token tile for canvases of
+at most 320 tokens. It chooses among widths 16, 32, 64 and 80 by minimizing
+`(width + 16) * ceil(blocks / SM_count)`, preferring the narrower width on a
+tie. For vocabulary projections with at least 65,536 weight rows and at most
+32 tokens, it instead uses a 128-row, 32-token tile. Both Q4_K and Q6_K read
+the same cached SM count; Q6_K keeps its previous rule on other devices and
+longer canvases. Direct-launch tests compare the new Q6_K tiles exactly with
+the original tile, including partial token and weight-row tiles.
 
 **Shared-memory layout.** Rows are padded so the 8 rows a fragment load reads
 fall in different banks: activation rows are 272 bytes apart (256 plus 16),

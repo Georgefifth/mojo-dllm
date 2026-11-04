@@ -56,6 +56,7 @@ live in `tests/fixtures/` and come from scripts, never from hand:
 | `kquants.gguf`, `bad-magic.gguf`, `tiny-llada.gguf`, `tiny-llada.expected.f32`, `tiny-dream.gguf`, `tiny-dream.expected.f32`, `malformed/`, `metadata/` | `scripts/gen_fixtures.py` | GGUF parsing and rejection, decoders, `ModelConfig` validation, the forward pass against a numpy reference |
 | `dequant-types.gguf`, `unsupported-embedding.gguf` | `scripts/gen_fixtures.py` | Q8_0/Q5_K/BF16/Q5_0 references (seed 340034) and embedding rejection before CPU/GPU allocation (no RNG) |
 | `llada-tokenizer.gguf`, `llada-tokenizer-golden.tsv`, `dream-tokenizer.gguf`, `dream-tokenizer-golden.tsv` | `scripts/gen_tokenizer_fixture.py` | tokenizer ids against `llama-tokenize` |
+| `golden-generation.tsv` | `UPDATE_GOLDEN=1 build/tests/test_golden` | tiny LLaDA/Dream token sequences, forward-pass counts, early stopping and per-step commits |
 | `src/mojo_dllm/tokenizer/unicode_tables.mojo` | `scripts/gen_unicode_tables.py` | code point classes from llama.cpp's own tables |
 | `moe-q5.bin`, `moe-q8.bin`, `moe-q4-q5.bin`, `moe-q4-q8.bin` | `scripts/gen_moe_fixture.py` | deterministic raw expert tensors for scalar MoE comparisons, including mixed activation block sizes |
 | GGUF/source tensor shape report | `scripts/check_weights.py` (`--self-test`) | LLaDA and Dream name mapping and safetensors header shapes; run with `uv run --only-group fixtures python scripts/check_weights.py MODEL.gguf INDEX.json` (the second argument may be one `.safetensors` file) |
@@ -68,6 +69,40 @@ The tiny model is 2 layers of hidden size 256 with random K-quant blocks. Its
 expected logits come from a float numpy forward pass over the weights that
 the `gguf` package dequantizes, so the Mojo forward pass is checked against
 the reference formats, not against itself.
+
+### Sampler goldens
+
+`tests/test_golden.mojo` pins current behavior on the tiny fixtures. These
+outputs come from mojo-dllm itself: they detect changes, not independent
+correctness. The numpy forward-pass tests and real-model parity runs provide
+that evidence. No model download or GPU is needed.
+
+Run from the repository root:
+
+```bash
+bash scripts/build.sh tests/test_golden.mojo build/tests/test_golden
+build/tests/test_golden
+# Only after reviewing an intentional behavior change:
+UPDATE_GOLDEN=1 build/tests/test_golden
+```
+
+Only `UPDATE_GOLDEN=1` writes the file. Normal runs reject missing, empty,
+duplicate, unknown or incomplete cases and compare tokens and schedule metadata
+exactly. A mismatch names the case, the first differing token position (including
+the prompt), both token lists and both complete rows. A golden diff in a PR needs
+a sentence explaining why behavior changed, and `test_model.mojo` must still
+pass. Do not regenerate merely to silence a failure on another machine; inspect
+the differing logits and select a case without an unstable near-tie.
+
+The 14 cases cover LLaDA block geometry, uneven transfer counts, serial commits,
+random remasking, temperature and early stop, plus Dream's three confidence
+rules, uneven timesteps, nondefault `eps` and early stop. LLaDA uses prompt
+`[5, 17, 300]`; Dream uses `[448, 50, 134]` because the original prompt gave
+identical all-49 outputs for D1 and D5. To avoid duplicate token lists, L5 uses
+seed 1, D2 uses `eps=0.2`, D3 uses a 12-token canvas and D4 uses `eps=0.1`.
+D1/D5 retain the same prompt, length and steps and differ only in `eps`.
+L8/D6 use fixed stop ids 347/49 taken from the baseline outputs, never selected
+at runtime. All cases disable threshold and dual-cache acceleration.
 
 ## Benchmarks
 
