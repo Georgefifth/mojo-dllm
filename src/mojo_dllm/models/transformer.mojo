@@ -26,8 +26,9 @@ results):
   are decoded into f32 arrays at load.
 
 `diffusion-gemma` files are read into a `ModelConfig` and checked against their
-tensor directory, but `DiffusionLM` refuses to run them: there is no forward pass
-for that architecture yet.
+tensor directory, but `DiffusionLM` refuses to run them. The
+CPU forward pass for that architecture is `DiffusionGemma` in
+`models/diffusion_gemma.mojo`.
 """
 
 from std.time import perf_counter_ns
@@ -252,8 +253,9 @@ struct ModelConfig(Copyable, ImplicitlyCopyable, Movable):
         if self.arch == GEMMA_ARCH:
             raise Error(
                 GEMMA_ARCH
-                + " has no forward pass yet: the file can be inspected but not"
-                " run"
+                + " does not run on this model: `logits` runs it on the CPU,"
+                " and `run` waits for the gemma4 tokenizer (#62) and the"
+                " denoiser (#65)"
             )
 
 

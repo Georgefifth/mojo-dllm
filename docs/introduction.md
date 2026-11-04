@@ -43,7 +43,8 @@ minutes](diffusion.md) walks through it with a picture.
 - Two architectures run: LLaDA and Dream. A `diffusion-gemma` file is read, and
   `inspect` prints its config, but `run` stops on it at the tokenizer with
   `unsupported tokenizer model: gemma4` (#62), on the CPU and the GPU. `logits`
-  reaches the model and stops with `diffusion-gemma has no forward pass yet`.
+  runs it on the CPU: one unified pass over the prompt and the canvas, checked
+  against a numpy forward pass on a tiny fixture (#64).
   Other architectures stop with
   `unsupported model architecture: <name> (runs: llada, dream; read only: diffusion-gemma)`.
 - One quantization mix: Q4_K and Q6_K projection matrices, as in a Q4_K_M

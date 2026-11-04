@@ -58,8 +58,9 @@ decision.
 
 A `diffusion-gemma` file is read into a `ModelConfig`, and `mojo-dllm inspect`
 prints the result, or the refusal and its key. `DiffusionLM` and the GPU model
-stop on it with `diffusion-gemma has no forward pass yet`, so a clean `inspect`
-does not mean the file runs. The names come from the unmerged
+stop on it with `diffusion-gemma does not run on this model`. `DiffusionGemma`
+runs it on the CPU through `logits`; `run` still waits for the tokenizer (#62)
+and the denoiser (#65), so a clean `inspect` does not mean `run` works. The names come from the unmerged
 ggml-org/llama.cpp#24423 and appear once each, as the `GEMMA_*` constants at the
 top of `models/transformer.mojo`. Keys carry the `diffusion-gemma.` prefix
 except `diffusion.canvas_length` and `tokenizer.ggml.mask_token_id`.

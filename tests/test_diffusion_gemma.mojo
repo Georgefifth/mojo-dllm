@@ -377,8 +377,8 @@ def test_refuses_an_embedding_that_is_not_hidden_wide() raises:
 # ---- the model does not run ---------------------------------------------------
 
 
-def test_the_cpu_model_reads_but_does_not_run_diffusion_gemma() raises:
-    with assert_raises(contains="diffusion-gemma has no forward pass yet"):
+def test_the_llada_model_does_not_run_diffusion_gemma() raises:
+    with assert_raises(contains="diffusion-gemma does not run on this model"):
         _ = DiffusionLM(
             FIX + "tiny-diffusion-gemma.gguf", threads=1, max_tokens=4
         )

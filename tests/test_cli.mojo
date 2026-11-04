@@ -3,6 +3,8 @@ from std.testing import assert_equal, assert_true, assert_raises, TestSuite
 
 from cli.args import Args
 from mojo_dllm.formats.gguf import GGUFFile
+from mojo_dllm.models.diffusion_gemma import DiffusionGemma
+from mojo_dllm.sys.mem import F32Ptr, Floats
 from mojo_dllm.sys.mmap import Mapping
 from main import (
     Decision,
@@ -15,6 +17,7 @@ from main import (
     inspect_text,
     json_str,
     _csv,
+    _logits_gemma,
     is_top_level_help,
     model_error,
     usage,
@@ -677,6 +680,59 @@ def test_other_errors_pass_through_unchanged() raises:
         model_error("file is empty or unreadable: m.gguf"),
         "file is empty or unreadable: m.gguf",
     )
+
+
+comptime DG_TINY = "tests/fixtures/tiny-diffusion-gemma.gguf"
+
+
+def _gemma_tokens(n: Int) -> List[Int]:
+    var tokens = List[Int]()
+    for i in range(n):
+        tokens.append((i * 37) % 500 + 5)
+    return tokens^
+
+
+def test_logits_runs_diffusion_gemma_over_prompt_and_canvas() raises:
+    # 25 tokens: a prompt of 9 and the canvas of 16 the tiny model declares.
+    var tokens = _gemma_tokens(25)
+    var rows = List[Int]()
+    for r in range(9, 25):
+        rows.append(r)
+    var path = String("build/tests/dg-logits-cli.f32")
+    _logits_gemma(DG_TINY, 2, tokens, rows, path)
+    var m = DiffusionGemma(DG_TINY, threads=2, max_tokens=25)
+    var want = Floats(16 * 512)
+    m.forward(tokens, want.ptr())
+    var mm = Mapping(path)
+    var got = F32Ptr(unsafe_from_address=mm.addr)
+    var differ = 0
+    for i in range(16 * 512):
+        if got.unsafe_load(i) != want[i]:
+            differ += 1
+    remove(path)
+    assert_equal(differ, 0)
+
+
+def test_logits_refuses_rows_that_are_not_the_canvas() raises:
+    var tokens = _gemma_tokens(25)
+    var path = String("build/tests/dg-logits-refused.f32")
+    var rows = List[Int]()
+    for r in range(8, 24):
+        rows.append(r)
+    with assert_raises(
+        contains=(
+            "scores the 16 canvas positions, the last of the tokens: --rows"
+            " must be 9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24, got 8,"
+        )
+    ):
+        _logits_gemma(DG_TINY, 1, tokens, rows, path)
+    var all_rows = List[Int]()
+    for r in range(25):
+        all_rows.append(r)
+    with assert_raises(contains="--rows must be 9,10"):
+        _logits_gemma(DG_TINY, 1, tokens, all_rows, path)
+    with assert_raises(contains="below the canvas length 16"):
+        _logits_gemma(DG_TINY, 1, _gemma_tokens(15), List[Int](), path)
 
 
 def main() raises:
