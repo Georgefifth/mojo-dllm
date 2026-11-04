@@ -99,7 +99,7 @@ def test_builds_cpu_only_into_its_own_directory(
     calls = log.read_text().splitlines()
     configure, build = calls[0], calls[1]
     assert f"-B {src}/build" in configure
-    for flag in ("-DGGML_CUDA=OFF", "-DCMAKE_BUILD_TYPE=Release", "-DLLAMA_OPENSSL=OFF", "-DLLAMA_BUILD_SERVER=OFF"):
+    for flag in ("-DGGML_CUDA=OFF", "-DCMAKE_BUILD_TYPE=Release", "-DLLAMA_OPENSSL=OFF", "-DLLAMA_BUILD_SERVER=OFF", "-DLLAMA_BUILD_UI=OFF", "-DLLAMA_USE_PREBUILT_UI=OFF"):
         assert flag in configure
     for target in ("llama-tokenize", "llama-diffusion-gemma-eval", "llama"):
         assert target in build.split()
@@ -152,3 +152,10 @@ def test_git_hook_variables_do_not_reach_the_checkout(
     assert done.returncode == 0, done.stderr
     assert git(tmp_path / "src", "rev-parse", "HEAD") == sha
     assert git(decoy, "rev-list", "--all", "--count") == "0"
+
+
+@pytest.mark.parametrize("bad", ["--upload-pack=x", "main", "2e715c0639", "G" * 40, "A" * 40])
+def test_a_commit_that_is_not_40_lowercase_hex_is_refused_before_git_runs(tmp_path: Path, bad: str) -> None:
+    done = run(tmp_path, {"DG_LLAMA_COMMIT": bad}, "--llama-only")
+    assert done.returncode != 0 and "40 hex" in done.stderr
+    assert not (tmp_path / "src").exists(), "nothing may be created before the commit is validated"

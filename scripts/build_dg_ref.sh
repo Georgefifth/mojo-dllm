@@ -17,7 +17,7 @@
 # moved since: its head was 5fcd1b166556b85b8957dd432fcaff5351af59bf on
 # 2026-10-29, which differs from the pin only by merges of upstream master. Move
 # the pin by editing PINNED_COMMIT here and in
-# tests/fixtures/gemma4-tokenizer-golden.source, and regenerate the goldens.
+# tests/fixtures/gemma4-tokenizer-golden.provenance.json, and regenerate the goldens.
 #
 # The build never reaches the network after the fetch: the server, the web UI
 # (a prebuilt-UI download), the tests and HTTPS (OpenSSL) are switched off.
@@ -64,6 +64,8 @@ fi
 for var in $local_vars; do
     unset "$var"
 done
+
+[[ $commit =~ ^[0-9a-f]{40}$ ]] || die "expected a commit of 40 hex characters, got: $commit"
 
 started=$SECONDS
 echo "build_dg_ref: commit $commit"
