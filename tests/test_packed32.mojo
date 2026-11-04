@@ -1,9 +1,14 @@
 from std.math import sqrt
 from std.testing import assert_equal, assert_true, assert_raises, TestSuite
 
-from mojo_dllm.formats.gguf import GGML_Q5_0, GGML_Q8_0, ggml_row_bytes
+from mojo_dllm.formats.gguf import (
+    GGML_Q4_K,
+    GGML_Q5_0,
+    GGML_Q8_0,
+    ggml_row_bytes,
+)
 from mojo_dllm.kernels.packed import PackedMatrix, pgemm
-from mojo_dllm.kernels.qgemm import QActs, quantize_acts
+from mojo_dllm.kernels.qgemm import QActs, quantize_acts, qgemm
 from mojo_dllm.quant.kquants import dequant_row
 from mojo_dllm.sys.mem import Bytes, Floats
 
@@ -167,6 +172,29 @@ def test_quantize32_rejects_bad_dimensions() raises:
     var x = Floats(64)
     with assert_raises(contains="too small"):
         quantize_acts(x.ptr(), 2, 32, qa)
+
+
+def test_packed32_rejects_incomplete_weight_block() raises:
+    # Two blocks per row leave ample backing storage even if the constructor
+    # incorrectly truncates K=33 to one block instead of rejecting it.
+    var raw = Bytes(8 * 2 * 34)
+    with assert_raises(contains="row length 33 is not a multiple of 32"):
+        _ = PackedMatrix(raw.addr, GGML_Q8_0, 8, 33)
+    _ = raw^
+
+
+def test_qgemm_rejects_32_value_activation_blocks() raises:
+    # The legacy Q4_K path expects one activation scale per 256 values.
+    # Oversized zero buffers make a missing refusal fail by assertion rather
+    # than by reading or writing beyond the allocated backing storage.
+    var raw = Bytes(8 * 210)
+    var qa = QActs(1, 256, 32)
+    var out = Floats(16)
+    with assert_raises(contains="qgemm requires activation block size 256"):
+        qgemm(raw.addr, GGML_Q4_K, 8, 256, qa, 1, out.ptr(), 8, 1)
+    _ = raw^
+    _ = qa^
+    _ = out^
 
 
 def main() raises:

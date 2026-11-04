@@ -361,5 +361,90 @@ def test_moe_empty_canvas_and_invalid_route_guards() raises:
         assert_equal(output[i], 12345)
 
 
+def _check_moe_dimension_guard(field: Int) raises:
+    var raw = Mapping("tests/fixtures/moe-q8.bin")
+    var scales = Floats(4)
+    for e in range(4):
+        scales[e] = 1
+    var weights = ExpertWeights(
+        raw.addr,
+        8,
+        raw.addr + 4 * 64 * ggml_row_bytes(8, 256),
+        8,
+        256,
+        32,
+        4,
+        scales.ptr(),
+    )
+    # Retain valid backing buffers and alter only one advertised dimension.
+    # If its guard is removed, the kernel can run safely and assert_raises
+    # fails instead of a buffer overrun disguising the missing validation.
+    var ws = MoEWorkspace(2, weights)
+    if field == 0:
+        ws.hidden = 257
+    elif field == 1:
+        ws.ffn = 33
+    elif field == 2:
+        ws.n_experts = 5
+    var routing = Routing(1, 5 if field == 3 else 4, 1)
+    routing.ids.i32().unsafe_store(0, 0)
+    routing.weights[0] = 1
+    var x = Floats(256)
+    var output = Floats(256)
+    for i in range(256):
+        output[i] = 12345
+    with assert_raises(contains="workspace does not match expert dimensions"):
+        grouped_experts(weights, x.ptr(), routing, ws, output.ptr(), 1)
+    for i in range(256):
+        assert_equal(output[i], 12345)
+
+
+def test_moe_rejects_workspace_hidden_mismatch() raises:
+    _check_moe_dimension_guard(0)
+
+
+def test_moe_rejects_workspace_ffn_mismatch() raises:
+    _check_moe_dimension_guard(1)
+
+
+def test_moe_rejects_workspace_expert_count_mismatch() raises:
+    _check_moe_dimension_guard(2)
+
+
+def test_moe_rejects_routing_expert_count_mismatch() raises:
+    _check_moe_dimension_guard(3)
+
+
+def test_moe_rejects_negative_expert_id() raises:
+    var raw = Mapping("tests/fixtures/moe-q8.bin")
+    var scales = Floats(4)
+    for e in range(4):
+        scales[e] = 1
+    var weights = ExpertWeights(
+        raw.addr,
+        8,
+        raw.addr + 4 * 64 * ggml_row_bytes(8, 256),
+        8,
+        256,
+        32,
+        4,
+        scales.ptr(),
+    )
+    # The expected Error must be reported before this negative id reaches
+    # the grouping Lists, whose bounds check otherwise traps.
+    var ws = MoEWorkspace(2, weights)
+    var routing = Routing(1, 4, 1)
+    routing.ids.i32().unsafe_store(0, -1)
+    routing.weights[0] = 1
+    var x = Floats(256)
+    var output = Floats(256)
+    for i in range(256):
+        output[i] = 12345
+    with assert_raises(contains="expert id out of range: -1"):
+        grouped_experts(weights, x.ptr(), routing, ws, output.ptr(), 1)
+    for i in range(256):
+        assert_equal(output[i], 12345)
+
+
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()
