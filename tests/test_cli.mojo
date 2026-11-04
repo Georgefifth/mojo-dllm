@@ -2,6 +2,7 @@ from std.os import remove
 from std.testing import assert_equal, assert_true, assert_raises, TestSuite
 
 from cli.args import Args
+from mojo_dllm.diffusion.sampler import GenResult
 from mojo_dllm.formats.gguf import GGUFFile
 from mojo_dllm.models.diffusion_gemma import DiffusionGemma
 from mojo_dllm.sys.mem import F32Ptr, Floats
@@ -11,6 +12,7 @@ from main import (
     boolean_flags,
     chat_prompt,
     check_args,
+    check_arch_flags,
     command_spec,
     decide,
     execute,
@@ -20,6 +22,7 @@ from main import (
     _logits_gemma,
     is_top_level_help,
     model_error,
+    stop_json,
     usage,
     usage_for,
 )
@@ -97,7 +100,7 @@ def _check(command: String, rest: List[String]) raises -> String:
 
 def test_every_command_declares_its_flags() raises:
     var run = command_spec("run")
-    assert_equal(len(run.values), 12)
+    assert_equal(len(run.values), 18)
     assert_equal(len(run.booleans), 8)
     var tokenize = command_spec("tokenize")
     assert_equal(len(tokenize.values), 2)
@@ -449,6 +452,119 @@ def test_values_that_can_never_be_valid_are_refused() raises:
     ok.append("--temperature")
     ok.append("0")
     assert_equal(_check("run", ok), "")
+
+
+def test_entropy_bound_flags_are_checked_before_the_model_loads() raises:
+    var base = List[String](["--model", "m", "--prompt", "p"])
+    for flag in List[String](["eb-steps", "eb-stability"]):
+        var r = base.copy()
+        r.append("--" + flag)
+        r.append("x")
+        assert_equal(
+            _check("run", r),
+            "flag --"
+            + flag
+            + " needs an integer, got 'x'\nsee: mojo-dllm run --help",
+        )
+    var low = base.copy()
+    low.append("--eb-steps")
+    low.append("0")
+    assert_equal(
+        _check("run", low),
+        "flag --eb-steps must be at least 1, got 0\nsee: mojo-dllm run --help",
+    )
+    var stab = base.copy()
+    stab.append("--eb-stability")
+    stab.append("-1")
+    assert_equal(
+        _check("run", stab),
+        (
+            "flag --eb-stability must be at least 0, got -1\nsee: mojo-dllm"
+            " run --help"
+        ),
+    )
+    for flag in List[String](
+        ["eb-t-min", "eb-t-max", "eb-bound", "eb-confidence"]
+    ):
+        for bad in List[String](["warm", "nan", "inf", ""]):
+            var r = base.copy()
+            r.append("--" + flag)
+            r.append(bad)
+            assert_equal(
+                _check("run", r),
+                "flag --"
+                + flag
+                + " needs a finite number, got '"
+                + bad
+                + "'\nsee: mojo-dllm run --help",
+            )
+    var zero_max = base.copy()
+    zero_max.append("--eb-t-max")
+    zero_max.append("0")
+    assert_equal(
+        _check("run", zero_max),
+        "flag --eb-t-max must be above 0, got 0\nsee: mojo-dllm run --help",
+    )
+    for flag in List[String](["eb-t-min", "eb-bound", "eb-confidence"]):
+        var r = base.copy()
+        r.append("--" + flag)
+        r.append("-0.5")
+        assert_equal(
+            _check("run", r),
+            "flag --"
+            + flag
+            + " must be at least 0, got -0.5\nsee: mojo-dllm run --help",
+        )
+    # The branch's own defaults, and the boundary values, are valid.
+    var ok = base.copy()
+    for pair in List[String](
+        [
+            "--eb-steps",
+            "48",
+            "--eb-t-min",
+            "0",
+            "--eb-t-max",
+            "0.8",
+            "--eb-bound",
+            "0",
+            "--eb-stability",
+            "0",
+            "--eb-confidence",
+            "0",
+        ]
+    ):
+        ok.append(pair)
+    assert_equal(_check("run", ok), "")
+
+
+def test_entropy_bound_flags_belong_to_diffusion_gemma() raises:
+    var spec = command_spec("run")
+    var with_eb = Args(
+        ["x", "run", "--eb-bound", "0.2"], spec.values, spec.booleans
+    )
+    with assert_raises(contains="--eb-bound applies to diffusion-gemma only"):
+        check_arch_flags(with_eb, "llada")
+    with assert_raises(contains="not dream"):
+        check_arch_flags(with_eb, "dream")
+    check_arch_flags(with_eb, "diffusion-gemma")
+    var plain = Args(["x", "run"], spec.values, spec.booleans)
+    check_arch_flags(plain, "llada")
+    var steps = Args(["x", "run", "--steps", "9"], spec.values, spec.booleans)
+    with assert_raises(contains="use --eb-steps"):
+        check_arch_flags(steps, "diffusion-gemma")
+    check_arch_flags(steps, "llada")
+
+
+def test_json_reports_steps_taken_and_the_stop_reason() raises:
+    var res = GenResult()
+    assert_equal(
+        stop_json(res), ', "steps_taken": 0, "stop_reason": "complete"'
+    )
+    res.steps_taken = 17
+    res.stop_reason = "converged"
+    assert_equal(
+        stop_json(res), ', "steps_taken": 17, "stop_reason": "converged"'
+    )
 
 
 def test_csv_flags_of_logits_are_checked() raises:
