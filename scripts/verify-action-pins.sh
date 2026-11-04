@@ -24,8 +24,7 @@
 # SOFTWARE.
 #
 # Preserve SHA pins; verify the tag named by each comment, peeling tag objects.
-# `# stable (branch)` is a deliberate moving reference, reported without a
-# comparison to today's branch head. Use exact release tags for other comments.
+# Every comment must be an exact release tag name.
 # Requires authenticated gh and uv (PyYAML comes from the lint group in pyproject.toml).
 set -uo pipefail
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -60,10 +59,6 @@ deref() {  # $1 repository, $2 tag -> commit (including nested annotated tags)
 
 while IFS=$'\t' read -r action sha claim location; do
     count=$((count + 1))
-    if [[ "$claim" == *' (branch)' ]]; then
-        printf '  BRANCH %-46s tracks %s by design (%s)\n' "$action" "${claim% (branch)}" "$location"
-        continue
-    fi
     # Action subpaths (e.g. codeql-action/analyze) share the repository's tags.
     owner="${action%%/*}"
     rest="${action#*/}"
