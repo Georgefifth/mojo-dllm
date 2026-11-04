@@ -58,6 +58,7 @@ live in `tests/fixtures/` and come from scripts, never from hand:
 | `llada-tokenizer.gguf`, `llada-tokenizer-golden.tsv`, `dream-tokenizer.gguf`, `dream-tokenizer-golden.tsv` | `scripts/gen_tokenizer_fixture.py` | tokenizer ids against `llama-tokenize` |
 | `golden-generation.tsv` | `UPDATE_GOLDEN=1 build/tests/test_golden` | tiny LLaDA/Dream token sequences, forward-pass counts, early stopping and per-step commits |
 | `src/mojo_dllm/tokenizer/unicode_tables.mojo` | `scripts/gen_unicode_tables.py` | code point classes from llama.cpp's own tables |
+| `moe-q5.bin`, `moe-q8.bin`, `moe-q4-q5.bin`, `moe-q4-q8.bin` | `scripts/gen_moe_fixture.py` | deterministic raw expert tensors for scalar MoE comparisons, including mixed activation block sizes |
 | GGUF/source tensor shape report | `scripts/check_weights.py` (`--self-test`) | LLaDA and Dream name mapping and safetensors header shapes; run with `uv run --only-group fixtures python scripts/check_weights.py MODEL.gguf INDEX.json` (the second argument may be one `.safetensors` file) |
 
 `tests/gpu/test_gpu.mojo` holds the GPU tests: each kernel against the CPU
