@@ -40,7 +40,8 @@ minutes](diffusion.md) walks through it with a picture.
 - The GPU path is measured on one laptop part, an RTX 3050 held to 30 W,
   against llama.cpp's CUDA build; [Benchmarks](benchmarks.md) has the numbers.
   It supports NVIDIA only.
-- Two architectures run: LLaDA and Dream. A `diffusion-gemma` file is read, but running it stops with
+- Two architectures run: LLaDA and Dream. A `diffusion-gemma` file is read and
+  `inspect` prints its config, but running it stops with
   `diffusion-gemma has no forward pass yet`. Other architectures stop with
   `unsupported model architecture: <name> (supported: llada, dream, diffusion-gemma)`.
 - One quantization mix: Q4_K and Q6_K projection matrices, as in a Q4_K_M

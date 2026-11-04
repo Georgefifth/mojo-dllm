@@ -21,8 +21,8 @@ semantic versioning (0.y: minor bumps may break things).
   directory against it: `attn_v` exactly on sliding layers, K width, the 3-D
   expert tensors and the rope table. A wrong key or tensor is refused by name,
   as are non-zero `attention.shared_kv_layers` and
-  `embedding_length_per_layer_input`. `DiffusionLM` and the GPU model stop on
-  these files: there is no forward pass yet (#61).
+  `embedding_length_per_layer_input`. `inspect` prints the config. `DiffusionLM`
+  and the GPU model stop on these files: there is no forward pass yet (#61).
   The key names come from the unmerged ggml-org/llama.cpp#24423.
 - Fused elementwise kernels on the GPU: the residual add, the RMSNorm and the
   activation quantization run as one launch (three per layer boundary plus
