@@ -114,9 +114,10 @@ DG_PREV_FILE = "unified.ref.f32"
 DG_PREV_TEMP_INV = 1.0 / 0.8
 LLADA_EVIDENCE = "bench/parity/2026-10-03-llada.json"
 # The reference's own sensitivity: with the previous-step logits changed by this relative L2 amount (about
-# ten times the spacing of float32 values) the output of the reference itself moves by 0.18 relative RMS on
-# a random canvas, because 8 of 128 experts are picked per token and bidirectional attention spreads a flip
-# to every row. It is run on every case so that a comparison is never read without that spread beside it.
+# ten times the spacing of float32 values) the output of the reference itself moved by a median relative RMS
+# of 0.18 to 0.26 on the two LLaDA prompts with a random canvas (measured, recorded per case as ref_spread).
+# The cause is untested; expert routing flips spread by bidirectional attention are a hypothesis. It is run on
+# every case so that a comparison is never read without that spread beside it.
 DG_NOISE_REL = 1e-6
 DG_NOISE_SEED = 66
 DG_NOISY_FILE = "unified-sc-noisy.ref.f32"
@@ -218,13 +219,17 @@ def _load_f32(path: pathlib.Path, vocab: int):
     return np.fromfile(path, dtype=np.float32).reshape(-1, vocab).astype(np.float64)
 
 
+def dg_top1_error(top_a: list[float], top_b: list[float]) -> float:
+    """The worst |a - b| / |b| over rows, from each row's largest logit (b is the reference)."""
+    if not top_a or len(top_a) != len(top_b):
+        raise SystemExit("refusing: the row maxima are empty or differ in length")
+    return max(abs(x - y) / abs(y) for x, y in zip(top_a, top_b))
+
+
 def dg_metrics(a: np.ndarray, b: np.ndarray, first_mask: int) -> dict:
     """`compare`, plus the worst relative error of a row's largest logit (b is the reference)."""
-    import numpy as np
-
     m = compare(a, b, first_mask)
-    top_a, top_b = a.max(axis=1), b.max(axis=1)
-    m["top1_max_rel_err"] = float(np.max(np.abs(top_a - top_b) / np.abs(top_b)))
+    m["top1_max_rel_err"] = dg_top1_error(a.max(axis=1).tolist(), b.max(axis=1).tolist())
     return m
 
 

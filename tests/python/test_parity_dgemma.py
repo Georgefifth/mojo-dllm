@@ -242,3 +242,41 @@ def test_a_case_without_a_recorded_spread_is_refused(tmp_path: Path) -> None:
     with pytest.raises(SystemExit) as e:
         parity.dg_compare(tmp_path, BOUND, load=lambda p: p.read_bytes(), compare_fn=fake_compare)
     assert "ref_spread" in str(e.value) and "--phase ref" in str(e.value)
+
+
+class Rows:
+    """Stands in for a numpy matrix: max(axis=1) gives the row maxima, any other axis gives the column maxima."""
+
+    def __init__(self, rows: list[list[float]]) -> None:
+        self.rows = rows
+
+    def max(self, axis: int) -> "Rows":
+        out = [max(r) for r in self.rows] if axis == 1 else [max(c) for c in zip(*self.rows)]
+        return Rows([out])
+
+    def tolist(self) -> list[float]:
+        return self.rows[0]
+
+
+def test_the_top_logit_error_is_the_worst_row_relative_to_the_reference() -> None:
+    # Row maxima 30 vs 30 (0), 27 vs 30 (0.1), 15 vs 30 (0.5): the worst is 0.5. Neither argument order nor
+    # sign may matter to the magnitude, and the denominator is the reference (b).
+    assert parity.dg_top1_error([30.0, 27.0, 15.0], [30.0, 30.0, 30.0]) == pytest.approx(0.5)
+    assert parity.dg_top1_error([30.0, 33.0], [30.0, 30.0]) == pytest.approx(0.1)
+    assert parity.dg_top1_error([60.0], [30.0]) == pytest.approx(1.0)
+    assert parity.dg_top1_error([30.0], [60.0]) == pytest.approx(0.5), "relative to the second argument"
+    for bad in ([], [1.0]):
+        with pytest.raises(SystemExit):
+            parity.dg_top1_error(bad, [1.0, 2.0])
+
+
+def test_dg_metrics_reads_row_maxima_along_axis_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(parity, "compare", lambda a, b, first: {"rows": 2})
+    # Row maxima 10 and 20 against 10 and 10: the metric is 1.0. Column maxima (axis 0) would be 20 and 20
+    # against 10 and 10, a different number.
+    a, b = Rows([[10.0, 1.0], [2.0, 20.0]]), Rows([[10.0, 1.0], [2.0, 10.0]])
+    m = parity.dg_metrics(a, b, 0)
+    assert m["top1_max_rel_err"] == pytest.approx(1.0) and m["rows"] == 2
+    # It differs from every other metric's view of the same data: the cap-removed case has equal argmax.
+    same = parity.dg_metrics(Rows([[10.0, 1.0]]), Rows([[10.0, 1.0]]), 0)
+    assert same["top1_max_rel_err"] == 0.0
