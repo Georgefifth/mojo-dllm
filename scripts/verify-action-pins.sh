@@ -38,8 +38,11 @@ count=0
 declare -A resolved
 
 deref() {  # $1 repository, $2 tag -> commit (including nested annotated tags)
-    local obj type sha depth=0
-    obj="$(gh api "repos/$1/git/ref/tags/$2" --jq '.object.type + " " + .object.sha')" || return 1
+    local obj ref type sha depth=0
+    obj="$(gh api "repos/$1/git/ref/tags/$2" --jq '.ref + " " + .object.type + " " + .object.sha')" || return 1
+    read -r ref type sha <<< "$obj"
+    [[ "$ref" == "refs/tags/$2" ]] || return 1
+    obj="$type $sha"
     while :; do
         read -r type sha <<< "$obj"
         [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || return 1
