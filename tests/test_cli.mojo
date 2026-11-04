@@ -14,6 +14,7 @@ from main import (
     command_spec,
     decide,
     execute,
+    inspect_text,
     json_str,
     _csv,
     is_top_level_help,
@@ -593,6 +594,125 @@ def test_equals_form_says_how_values_are_given() raises:
             " mojo-dllm run --help"
         ),
     )
+
+
+def _joined(lines: List[String]) -> String:
+    var text = String("")
+    for line in lines:
+        text += line + "\n"
+    return text
+
+
+def test_inspect_pins_the_diffusion_gemma_fixture_output() raises:
+    var path = "tests/fixtures/tiny-diffusion-gemma.gguf"
+    var text = inspect_text(path)
+    var head = _joined(
+        [
+            "file: " + path,
+            "gguf version: 3",
+            "architecture: diffusion-gemma",
+            "name: tiny-diffusion-gemma",
+            "tensors: 52",
+            "metadata keys: 28",
+            "",
+            "config:",
+            "  blocks: 2 (sliding 1, global 1)",
+            "  global layers: 1",
+            "  hidden size: 256",
+            "  heads: 8",
+            "  kv heads: 4 sliding, 1 global",
+            "  head size: 64 sliding, 128 global",
+            "  rope base: 10000.0 sliding, 1000000.0 global",
+            "  sliding window: 128",
+            "  dense ffn: 512",
+            "  experts: 4 (2 used), ffn 64",
+            "  vocabulary: 512, mask token 4",
+            "  final logit softcap: 30.0",
+            "  canvas length: 16",
+            "  context length: 8192",
+            "",
+            "metadata:",
+            '  general.architecture = "diffusion-gemma"',
+            '  general.name = "tiny-diffusion-gemma"',
+            "  diffusion-gemma.block_count = 2",
+            "  diffusion-gemma.context_length = 8192",
+            "  diffusion-gemma.embedding_length = 256",
+            "  diffusion-gemma.feed_forward_length = 512",
+            "  diffusion-gemma.attention.head_count = 8",
+            "  diffusion-gemma.attention.head_count_kv = <array of 2>",
+            "  diffusion-gemma.rope.freq_base = 1000000.0",
+            "  diffusion-gemma.rope.freq_base_swa = 10000.0",
+            "  diffusion-gemma.attention.layer_norm_rms_epsilon = 1e-06",
+            "  diffusion-gemma.expert_count = 4",
+            "  diffusion-gemma.expert_used_count = 2",
+            "  diffusion-gemma.attention.key_length = 128",
+            "  diffusion-gemma.attention.value_length = 128",
+            "  diffusion-gemma.final_logit_softcapping = 30.0",
+            "  diffusion-gemma.attention.sliding_window = 128",
+            "  diffusion-gemma.attention.shared_kv_layers = 0",
+            "  diffusion-gemma.embedding_length_per_layer_input = 0",
+            "  diffusion-gemma.attention.sliding_window_pattern = <array of 2>",
+            "  diffusion-gemma.attention.key_length_swa = 64",
+            "  diffusion-gemma.attention.value_length_swa = 64",
+            "  diffusion-gemma.expert_feed_forward_length = 64",
+            "  diffusion-gemma.rope.dimension_count = 128",
+            "  diffusion-gemma.rope.dimension_count_swa = 64",
+            "  diffusion-gemma.attention.causal = false",
+            "  diffusion.canvas_length = 16",
+            "  tokenizer.ggml.mask_token_id = 4",
+            "",
+            "tensor types:",
+            "  Q6_K: 2",
+            "  F32: 31",
+            "  Q4_K: 14",
+            "  Q5_0: 3",
+            "  Q8_0: 2",
+            "",
+            "tensors:",
+        ]
+    )
+    assert_true(text.startswith(head), "the inspect output starts differently")
+    assert_true(
+        "  blk.1.ffn_gate_up_exps.weight  Q4_K  [256, 128, 4]\n" in text,
+        "a 3-D expert tensor is listed with its shape",
+    )
+    assert_true(
+        "  blk.0.ffn_down_exps.weight  Q5_0  [64, 256, 4]\n" in text,
+        "a Q5_0 expert tensor is listed with its type",
+    )
+    assert_true("blk.1.attn_v.weight" not in text, "a global layer has no V")
+
+
+def test_inspect_says_why_a_diffusion_gemma_config_is_refused() raises:
+    var text = inspect_text(
+        "tests/fixtures/diffusion-gemma/shared-kv-layers.gguf"
+    )
+    assert_true("architecture: diffusion-gemma\n" in text)
+    assert_true(
+        "config: refused: diffusion-gemma.attention.shared_kv_layers must be 0,"
+        " got 2"
+        in text,
+        "inspect names the refused key",
+    )
+    assert_true(
+        "  diffusion-gemma.attention.shared_kv_layers = 2\n" in text,
+        "inspect still lists the metadata",
+    )
+
+
+def test_inspect_lists_every_global_layer() raises:
+    var two = inspect_text("tests/fixtures/diffusion-gemma/all-global.gguf")
+    assert_true("  blocks: 2 (sliding 0, global 2)\n" in two)
+    assert_true("  global layers: 0, 1\n" in two)
+    var none = inspect_text("tests/fixtures/diffusion-gemma/all-sliding.gguf")
+    assert_true("  blocks: 2 (sliding 2, global 0)\n" in none)
+    assert_true("  global layers: none\n" in none)
+
+
+def test_inspect_prints_no_config_for_the_other_architectures() raises:
+    var text = inspect_text("tests/fixtures/tiny-llada.gguf")
+    assert_true("architecture: llada\n" in text)
+    assert_true("config:" not in text)
 
 
 def test_inspect_rejects_a_second_path() raises:
