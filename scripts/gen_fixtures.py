@@ -25,6 +25,7 @@ Outputs (deterministic, seed 1234 unless noted):
                                    2-layer diffusion-gemma model (one sliding, one global, 4 experts), seed 610061
   tests/fixtures/diffusion-gemma/  that model's metadata and tensor directory with one thing wrong per file
   tests/fixtures/gemma4-tiny/      a 279-token gemma4 vocabulary and variants with one thing wrong each (issue #62)
+  tests/fixtures/gpt2-tiny/        a six-token byte-level BPE vocabulary with the ids a real one leaves out (issue #62)
 """
 
 from __future__ import annotations
@@ -791,6 +792,7 @@ def main() -> None:
     entropy_rows()
     diffusion_gemma()
     gemma4_tiny()
+    gpt2_tiny()
     for p in sorted(OUT.iterdir()):
         print(f"{p.stat().st_size:>9}  {p.relative_to(ROOT)}")
 
@@ -915,6 +917,28 @@ def gemma4_tiny() -> None:
     # No <turn|> and no <|tool_response>: nothing for the end-of-generation list to add beyond EOS.
     t, k = with_entries((6, "<end>", None), (8, "<tool_result>", None))
     write("no-end-of-turn.gguf", add_bos=False, tokens=t, types=k)
+
+
+def gpt2_tiny() -> None:
+    """A byte-level BPE vocabulary with the ids that LLaDA's and Dream's files leave out (see tests/test_tokenizer.mojo).
+
+    Tokenizer keys only: padding and unknown ids, an EOS id, and neither `<|eot_id|>` nor `<|im_end|>`, so the
+    end-of-turn id is -1. The loader maps bytes to code points itself and needs no byte tokens, so six tokens do.
+    """
+    (OUT / "gpt2-tiny").mkdir(exist_ok=True)
+    w = GGUFWriter(str(OUT / "gpt2-tiny" / "ids.gguf"), "llada")
+    w.add_string("tokenizer.ggml.model", "gpt2")
+    w.add_string("tokenizer.ggml.pre", "qwen2")
+    w.add_array("tokenizer.ggml.tokens", ["a", "b", "<pad>", "<unk>", "<eos>", "ab"])
+    w.add_array("tokenizer.ggml.token_type", [1, 1, 3, 2, 3, 1])
+    w.add_array("tokenizer.ggml.merges", ["a b"])
+    w.add_uint32("tokenizer.ggml.padding_token_id", 2)
+    w.add_uint32("tokenizer.ggml.unknown_token_id", 3)
+    w.add_uint32("tokenizer.ggml.eos_token_id", 4)
+    w.write_header_to_file()
+    w.write_kv_data_to_file()
+    w.write_tensors_to_file()
+    w.close()
 
 
 def entropy_rows() -> None:
