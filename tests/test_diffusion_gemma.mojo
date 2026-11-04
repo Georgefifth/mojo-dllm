@@ -182,8 +182,9 @@ def test_the_smallest_values_and_the_absent_optional_keys_pass() raises:
     assert_equal(c.expert_ffn, 1)
     assert_equal(c.canvas, 1)
     # context_length, final_logit_softcapping and attention.causal are optional.
+    # A missing soft cap is llama.cpp's default of 30, not "off" (llama-hparams.h).
     assert_equal(c.ctx, 4096)
-    assert_equal(c.softcap, Float32(0.0))
+    assert_equal(c.softcap, Float32(30.0))
 
 
 def test_a_file_with_one_kind_of_layer_passes() raises:
