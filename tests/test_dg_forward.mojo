@@ -9,6 +9,7 @@ from mojo_dllm.kernels.ops import (
 from mojo_dllm.models.diffusion_gemma import (
     DiffusionGemma,
     KeyRange,
+    check_block_sizes,
     key_range,
 )
 from mojo_dllm.sys.mem import Bytes, F32Ptr, I32Ptr, Floats
@@ -410,6 +411,118 @@ def test_forward_refuses_bad_input() raises:
     bad[3] = c.vocab
     with assert_raises(contains="outside the vocabulary"):
         m.forward(bad, logits.ptr())
+
+
+def test_model_refuses_other_architectures_and_small_limits() raises:
+    with assert_raises(contains="runs diffusion-gemma files, not llada"):
+        _ = DiffusionGemma(FIX + "tiny-llada.gguf", threads=1, max_tokens=32)
+    with assert_raises(contains="below the canvas length 16"):
+        _ = DiffusionGemma(
+            FIX + "tiny-diffusion-gemma.gguf", threads=1, max_tokens=15
+        )
+
+
+def test_run_layers_refuses_a_layer_count_out_of_range() raises:
+    var m = _model(32)
+    var toks = List[Int]()
+    for _ in range(16):
+        toks.append(5)
+    with assert_raises(contains="layer count 3 is out of range"):
+        _ = m.run_layers(toks, 3)
+    with assert_raises(contains="layer count -1 is out of range"):
+        _ = m.run_layers(toks, -1)
+
+
+def test_attention_refuses_an_empty_or_outside_key_range() raises:
+    var q = Floats(16)
+    var k = Floats(16)
+    var o = Floats(16)
+    var lo = Bytes(4)
+    var hi = Bytes(4)
+    for bad in [[2, 2], [-1, 1], [0, 3]]:
+        lo.i32().unsafe_store(0, Int32(bad[0]))
+        hi.i32().unsafe_store(0, Int32(bad[1]))
+        with assert_raises(contains="is empty or outside 2 keys"):
+            attention_ranges(
+                q.ptr(),
+                k.ptr(),
+                k.ptr(),
+                o.ptr(),
+                lo.i32(),
+                hi.i32(),
+                1,
+                2,
+                1,
+                1,
+                8,
+                1.0,
+                1,
+            )
+    lo.i32().unsafe_store(0, 0)
+    hi.i32().unsafe_store(0, 1)
+    with assert_raises(contains="multiple of 8"):
+        attention_ranges(
+            q.ptr(),
+            k.ptr(),
+            k.ptr(),
+            o.ptr(),
+            lo.i32(),
+            hi.i32(),
+            1,
+            2,
+            1,
+            1,
+            12,
+            1.0,
+            1,
+        )
+    with assert_raises(contains="multiple of 8"):
+        attention_ranges(
+            q.ptr(),
+            k.ptr(),
+            k.ptr(),
+            o.ptr(),
+            lo.i32(),
+            hi.i32(),
+            1,
+            2,
+            3,
+            2,
+            8,
+            1.0,
+            1,
+        )
+
+
+def test_block_size_check_names_the_matrix_that_does_not_fit() raises:
+    check_block_sizes(0, 256, 256, 256, 256, 256, 256, 32, 256, 32)
+    var names = [
+        "attn_q",
+        "attn_k",
+        "attn_v",
+        "attn_output",
+        "ffn_gate",
+        "ffn_up",
+        "ffn_down",
+        "expert gate/up",
+        "expert down",
+    ]
+    for i in range(9):
+        var sizes = [256, 256, 256, 256, 256, 256, 32, 256, 32]
+        sizes[i] = 32 if sizes[i] == 256 else 256
+        with assert_raises(contains="layer 7: " + names[i] + " has"):
+            check_block_sizes(
+                7,
+                sizes[0],
+                sizes[1],
+                sizes[2],
+                sizes[3],
+                sizes[4],
+                sizes[5],
+                sizes[6],
+                sizes[7],
+                sizes[8],
+            )
 
 
 def main() raises:

@@ -96,6 +96,50 @@ def _load_matrix(
     return pm^
 
 
+def check_block_sizes(
+    layer: Int,
+    q: Int,
+    k: Int,
+    v: Int,
+    o: Int,
+    gate: Int,
+    up: Int,
+    down: Int,
+    expert_gate_up: Int,
+    expert_down: Int,
+) raises:
+    """The activation buffers cover one weight-type mix: 256-wide blocks (Q4_K,
+    Q6_K) for attention, gate and up, and 32-wide blocks (Q5_0, Q8_0) for the
+    down projections. Any other mix would read a buffer quantized for another
+    block size, so it is refused when the model loads."""
+    var names = [
+        "attn_q",
+        "attn_k",
+        "attn_v",
+        "attn_output",
+        "ffn_gate",
+        "ffn_up",
+        "ffn_down",
+        "expert gate/up",
+        "expert down",
+    ]
+    var got = [q, k, v, o, gate, up, down, expert_gate_up, expert_down]
+    var want = [256, 256, 256, 256, 256, 256, 32, 256, 32]
+    for i in range(len(names)):
+        if got[i] != want[i]:
+            raise Error(
+                "layer "
+                + String(layer)
+                + ": "
+                + names[i]
+                + " has "
+                + String(got[i])
+                + "-wide blocks where the activation buffers cover "
+                + String(want[i])
+                + " (attention, gate and up 256, down 32)"
+            )
+
+
 struct GemmaLayer(Movable):
     var sliding: Bool
     var n_kv: Int
@@ -252,21 +296,20 @@ struct DiffusionGemma(Movable):
         for i in range(c.n_layers):
             width_q = max(width_q, c.n_heads * c.head_size(i))
             width_kv = max(width_kv, c.kv_heads(i) * c.head_size(i))
-            var l = self.layers[i].wq.block_size
-            if (
-                l != 256
-                or self.layers[i].wo.block_size != 256
-                or self.layers[i].gate.block_size != 256
-                or self.layers[i].down.block_size != 32
-                or self.layers[i].experts.gate_up[0].block_size != 256
-                or self.layers[i].experts.down[0].block_size != 32
-            ):
-                raise Error(
-                    "layer "
-                    + String(i)
-                    + " mixes weight types the activation buffers do not"
-                    " cover (attention and gate/up 256-wide, down 32-wide)"
-                )
+            ref L = self.layers[i]
+            var v_block = L.wv[0].block_size if len(L.wv) > 0 else 256
+            check_block_sizes(
+                i,
+                L.wq.block_size,
+                L.wk.block_size,
+                v_block,
+                L.wo.block_size,
+                L.gate.block_size,
+                L.up.block_size,
+                L.down.block_size,
+                L.experts.gate_up[0].block_size,
+                L.experts.down[0].block_size,
+            )
         var T = max_tokens
         self.x = Floats(T * d)
         self.xn = Floats(T * d)
