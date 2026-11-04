@@ -411,6 +411,9 @@ def test_forward_refuses_bad_input() raises:
     bad[3] = c.vocab
     with assert_raises(contains="outside the vocabulary"):
         m.forward(bad, logits.ptr())
+    bad[3] = -1
+    with assert_raises(contains="token id -1 is outside the vocabulary"):
+        m.forward(bad, logits.ptr())
 
 
 def test_model_refuses_other_architectures_and_small_limits() raises:
