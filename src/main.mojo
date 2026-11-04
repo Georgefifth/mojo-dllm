@@ -143,6 +143,11 @@ def usage_for(command: String) raises -> String:
     return "usage:\n" + command_usage(command)
 
 
+def version_line() -> String:
+    """The one line `mojo-dllm --version` prints."""
+    return "mojo-dllm " + VERSION
+
+
 def usage() raises -> String:
     return (
         "mojo-dllm "
@@ -158,6 +163,7 @@ def usage() raises -> String:
         + command_usage("logits")
         + "\n"
         + "\nrun mojo-dllm COMMAND --help for one command's usage\n"
+        + "run mojo-dllm --version to print the version\n"
     )
 
 
@@ -912,6 +918,8 @@ def decide(raw: List[String]) raises -> Decision:
     var command = raw[1] if len(raw) > 1 else String("")
     if is_top_level_help(command):
         return Decision(0, usage(), False, False)
+    if command == "--version":
+        return Decision(0, version_line(), False, False)
     if not command_known(command):
         return Decision(
             2,
