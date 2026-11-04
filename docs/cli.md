@@ -37,7 +37,7 @@ stops the run (see [Errors](#errors)).
 | `--eb-t-min T` | 0.4 | DiffusionGemma: the temperature the schedule approaches, 0 or more; the last of `--eb-steps` steps runs at `T + (t-max - T) / steps` |
 | `--eb-t-max T` | 0.8 | DiffusionGemma: the temperature of the first step; it falls linearly from there |
 | `--eb-bound B` | 0.1 | DiffusionGemma: a position is accepted while the entropies of the lower-entropy positions before it sum to at most B |
-| `--eb-stability N` | 1 | DiffusionGemma: steps the argmax canvas must hold before the run may stop; 0 or more |
+| `--eb-stability N` | 1 | DiffusionGemma: steps the argmax canvas must hold before the run may stop; 0 or more, and 0 lets the first step stop it |
 | `--eb-confidence C` | 0.005 | DiffusionGemma: the run may stop once the mean entropy over the canvas is below C |
 | `--threads N` | all logical CPUs | worker threads (with `--device gpu`, only the sampler uses them) |
 | `--device D` | `cpu` | `cpu`, or `gpu` for an NVIDIA GPU with compute capability 8.0 or newer |

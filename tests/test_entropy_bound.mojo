@@ -721,6 +721,19 @@ def test_run_uses_the_given_t_min_t_max_and_confidence() raises:
     assert_equal(res.stop_reason, "converged")
 
 
+def test_run_with_stability_zero_stops_at_step_one() raises:
+    var vocab = 6
+    var step = _step(_one_hot(vocab, 3), _one_hot(vocab, 1))
+    var m = ScriptedModel(vocab, [step.copy()])
+    var prompt: List[Int] = [1]
+    var c = _cfg(2)
+    c.eb_stability = 0
+    var res = _run(m, prompt, c)
+    assert_equal(res.steps_taken, 1)
+    assert_equal(res.stop_reason, "converged")
+    assert_true(res.stopped_early)
+
+
 def test_run_asks_the_model_for_the_canvas_rows_only() raises:
     var vocab = 4
     var step = _step(_one_hot(vocab, 2), _one_hot(vocab, 1))
