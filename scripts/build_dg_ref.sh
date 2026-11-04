@@ -56,6 +56,15 @@ die() {
     exit 1
 }
 
+# Run from a git hook, GIT_DIR and its relatives name the repository being pushed, and every `git -C` below
+# would act on that one instead of the llama.cpp tree.
+if ! local_vars="$(git rev-parse --local-env-vars)"; then
+    die "git rev-parse --local-env-vars failed"
+fi
+for var in $local_vars; do
+    unset "$var"
+done
+
 started=$SECONDS
 echo "build_dg_ref: commit $commit"
 echo "build_dg_ref: source $src"

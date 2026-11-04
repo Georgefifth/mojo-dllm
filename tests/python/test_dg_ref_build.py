@@ -128,3 +128,27 @@ def test_an_abbreviated_commit_is_not_the_pin(tmp_path: Path, upstream: tuple[Pa
     done = run(tmp_path, {"DG_LLAMA_REPO": str(repo), "DG_LLAMA_COMMIT": sha[:12]}, "--llama-only", bindir=bindir, log=log)
     assert done.returncode != 0 and "expected" in done.stderr
     assert not log.exists()
+
+
+def test_git_hook_variables_do_not_reach_the_checkout(
+    tmp_path: Path, upstream: tuple[Path, str], stub_cmake: tuple[Path, Path]
+) -> None:
+    # git exports GIT_DIR, GIT_WORK_TREE and GIT_INDEX_FILE to its hooks. With them set, `git init` and
+    # `git -C` act on that repository instead of the one named, so the build would fetch into and check out
+    # the repository being pushed. The decoy stands in for it.
+    repo, sha = upstream
+    bindir, log = stub_cmake
+    decoy = tmp_path / "decoy"
+    decoy.mkdir()
+    subprocess.run(["git", "init", "-q", str(decoy)], check=True)
+    leaked = {
+        "GIT_DIR": str(decoy / ".git"),
+        "GIT_WORK_TREE": str(decoy),
+        "GIT_INDEX_FILE": str(decoy / ".git" / "index"),
+    }
+    done = run(
+        tmp_path, {"DG_LLAMA_REPO": str(repo), "DG_LLAMA_COMMIT": sha, **leaked}, "--llama-only", bindir=bindir, log=log
+    )
+    assert done.returncode == 0, done.stderr
+    assert git(tmp_path / "src", "rev-parse", "HEAD") == sha
+    assert git(decoy, "rev-list", "--all", "--count") == "0"
