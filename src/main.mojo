@@ -24,7 +24,12 @@ from mojo_dllm.diffusion.sampler import (
     generate_observed,
 )
 from mojo_dllm.gpu.model import GpuDiffusionLM
-from mojo_dllm.models.transformer import DenoisingModel, DiffusionLM
+from mojo_dllm.models.transformer import (
+    DenoisingModel,
+    DiffusionLM,
+    ModelConfig,
+    GEMMA_ARCH,
+)
 from mojo_dllm.sys.mem import Bytes, Floats
 from mojo_dllm.tokenizer.bpe import Tokenizer
 
@@ -608,31 +613,116 @@ def _csv(xs: List[Int]) -> String:
     return s
 
 
-def cmd_inspect(a: Args) raises:
-    var g = GGUFFile(a.positional[0])
-    print("file:", a.positional[0])
-    print("gguf version:", g.version)
-    print("architecture:", g.get_str_or("general.architecture", "?"))
-    print("name:", g.get_str_or("general.name", "?"))
-    print("tensors:", g.n_tensors())
-    print("metadata keys:", len(g.kvs))
-    print()
-    print("metadata:")
+def _gemma_config_text(g: GGUFFile) -> String:
+    """The `config:` block of `inspect` for a diffusion-gemma file: what the
+    reader took from it, or the reason it refuses the file. `inspect` lists a
+    file either way."""
+    try:
+        var c = ModelConfig(g)
+        var sliding = 0
+        var global_layers = String("")
+        for i in range(c.n_layers):
+            if c.is_sliding(i):
+                sliding += 1
+            else:
+                if global_layers.byte_length() > 0:
+                    global_layers += ", "
+                global_layers += String(i)
+        if global_layers.byte_length() == 0:
+            global_layers = "none"
+        var text = String("config:\n")
+        text += (
+            "  blocks: "
+            + String(c.n_layers)
+            + " (sliding "
+            + String(sliding)
+            + ", global "
+            + String(c.n_layers - sliding)
+            + ")\n"
+        )
+        text += "  global layers: " + global_layers + "\n"
+        text += "  hidden size: " + String(c.hidden) + "\n"
+        text += "  heads: " + String(c.n_heads) + "\n"
+        text += (
+            "  kv heads: "
+            + String(c.n_kv_heads_swa)
+            + " sliding, "
+            + String(c.n_kv_heads)
+            + " global\n"
+        )
+        text += (
+            "  head size: "
+            + String(c.head_dim_swa)
+            + " sliding, "
+            + String(c.head_dim)
+            + " global\n"
+        )
+        text += (
+            "  rope base: "
+            + String(c.theta_swa)
+            + " sliding, "
+            + String(c.theta)
+            + " global\n"
+        )
+        text += "  sliding window: " + String(c.sliding_window) + "\n"
+        text += "  dense ffn: " + String(c.ffn) + "\n"
+        text += (
+            "  experts: "
+            + String(c.n_experts)
+            + " ("
+            + String(c.n_experts_used)
+            + " used), ffn "
+            + String(c.expert_ffn)
+            + "\n"
+        )
+        text += (
+            "  vocabulary: "
+            + String(c.vocab)
+            + ", mask token "
+            + String(c.mask_id)
+            + "\n"
+        )
+        text += "  final logit softcap: " + String(c.softcap) + "\n"
+        text += "  canvas length: " + String(c.canvas) + "\n"
+        text += "  context length: " + String(c.ctx) + "\n"
+        return text
+    except e:
+        return "config: refused: " + String(e) + "\n"
+
+
+def inspect_text(path: String) raises -> String:
+    """What `inspect` prints, as one string."""
+    var g = GGUFFile(path)
+    var text = String("")
+    text += "file: " + path + "\n"
+    text += "gguf version: " + String(g.version) + "\n"
+    text += "architecture: " + g.get_str_or("general.architecture", "?") + "\n"
+    text += "name: " + g.get_str_or("general.name", "?") + "\n"
+    text += "tensors: " + String(g.n_tensors()) + "\n"
+    text += "metadata keys: " + String(len(g.kvs)) + "\n"
+    if g.get_str_or("general.architecture", "?") == GEMMA_ARCH:
+        text += "\n" + _gemma_config_text(g)
+    text += "\nmetadata:\n"
     for i in range(len(g.kvs)):
-        print("  ", g.kvs[i].key, " = ", g.value_str(i), sep="")
+        text += "  " + g.kvs[i].key + " = " + g.value_str(i) + "\n"
     var counts = Dict[String, Int]()
     for i in range(g.n_tensors()):
         var tn = g.tensors[i].type_name()
         counts[tn] = counts.get(tn, 0) + 1
-    print()
-    print("tensor types:")
+    text += "\ntensor types:\n"
     for e in counts.items():
-        print("  ", e.key, ": ", e.value, sep="")
-    print()
-    print("tensors:")
+        text += "  " + e.key + ": " + String(e.value) + "\n"
+    text += "\ntensors:\n"
     for i in range(g.n_tensors()):
         var t = g.tensors[i]
-        print("  ", t.name, "  ", t.type_name(), "  ", t.shape_str(), sep="")
+        text += (
+            "  " + t.name + "  " + t.type_name() + "  " + t.shape_str() + "\n"
+        )
+    return text
+
+
+def cmd_inspect(a: Args) raises:
+    print(inspect_text(a.positional[0]), end="")
 
 
 def cmd_logits(a: Args) raises:
