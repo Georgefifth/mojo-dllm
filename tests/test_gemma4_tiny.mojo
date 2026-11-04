@@ -179,5 +179,67 @@ def test_tiny_token_and_type_counts_must_agree() raises:
         _ = _tok("short-types.gguf")
 
 
+def test_tiny_a_missing_bos_id_is_named() raises:
+    with assert_raises(contains="tokenizer.ggml.bos_token_id is required"):
+        _ = _tok("no-bos-id.gguf")
+
+
+def test_tiny_a_special_id_outside_the_vocabulary_is_named() raises:
+    with assert_raises(
+        contains=(
+            "tokenizer.ggml.bos_token_id is 293, outside the vocabulary of"
+            " 279 tokens"
+        )
+    ):
+        _ = _tok("bos-out-of-range.gguf")
+
+
+def test_tiny_add_eos_without_an_eos_id_is_named() raises:
+    with assert_raises(contains="add_eos_token is true but"):
+        _ = _tok("eos-flag-without-id.gguf")
+
+
+def test_tiny_only_the_never_prepend_scheme_is_supported() raises:
+    with assert_raises(contains="prepend_scheme is 'first'"):
+        _ = _tok("metaspace-first.gguf")
+    var tok = _tok("metaspace-never.gguf")
+    _check(tok, "a", [266])
+
+
+def test_tiny_two_tokens_with_one_text_are_named() raises:
+    with assert_raises(contains="'a' at ids 266 and 267"):
+        _ = _tok("duplicate-token.gguf")
+
+
+def test_tiny_an_empty_token_gets_llama_cpps_placeholder_name() raises:
+    var tok = _tok("empty-token.gguf")
+    assert_equal(tok.token_id("[EMPTY_278]"), 278)
+    assert_equal(tok.decode([278]), "[EMPTY_278]")
+
+
+def _from_bytes(*bytes: Int) -> String:
+    var raw = List[UInt8]()
+    for b in bytes:
+        raw.append(UInt8(b))
+    return String(StringSpan(unsafe_from_utf8=Span(raw)))
+
+
+def test_tiny_text_that_is_not_utf8_falls_back_to_bytes() raises:
+    # llama.cpp throws on such text; here every stray byte is a byte token,
+    # and a lead byte with too few bytes after it cannot read past the end.
+    var tok = _tok("base.gguf")
+    _check(tok, _from_bytes(0x61, 0xE2), [266, BYTE0 + 0xE2])
+    _check(tok, _from_bytes(0xE2, 0x96), [BYTE0 + 0xE2, BYTE0 + 0x96])
+    # A lead byte takes the bytes its length announces as one symbol, valid or
+    # not, so the a after 0xFF is part of it and neither is a token.
+    _check(tok, _from_bytes(0xFF, 0x61), [BYTE0 + 0xFF, BYTE0 + 0x61])
+
+
+def test_tiny_end_of_generation_ids() raises:
+    var tok = _tok("base.gguf")
+    var eog = tok.eog_ids()
+    assert_equal(_show(eog), "[1, 6, 8]")
+
+
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

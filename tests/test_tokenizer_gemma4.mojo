@@ -400,9 +400,9 @@ def test_gemma4_merges_by_rank_match_a_quadratic_reference() raises:
         "_",
     ]
     var seed = 20261104
-    for ci in range(120):
+    for ci in range(150):
         seed = (seed * 1103515245 + 12345) % 2147483648
-        var n = 1 + (seed // 65536) % 150
+        var n = 1 + (seed // 65536) % 400
         var text = String("")
         for _ in range(n):
             seed = (seed * 1103515245 + 12345) % 2147483648
@@ -422,9 +422,9 @@ def test_gemma4_merges_by_rank_match_a_quadratic_reference() raises:
         )
 
 
-def test_gemma4_long_line_encodes_and_matches_the_reference() raises:
+def test_gemma4_a_long_line_is_one_word_and_round_trips() raises:
     # One line, no newline: the whole text is a single BPE word, which is
-    # where a quadratic merge loop would fall over. 40,000 characters here.
+    # where a quadratic merge loop would fall over. 99,000 bytes here.
     var tok = _real()
     var line = String("")
     for i in range(2000):
@@ -434,6 +434,30 @@ def test_gemma4_long_line_encodes_and_matches_the_reference() raises:
     var ids = tok.encode(line)
     assert_true(len(ids) > 10000)
     assert_equal(tok.decode(ids), line)
+
+
+def test_gemma4_end_of_generation_ids() raises:
+    var tok = _real()
+    assert_equal(_show(tok.eog_ids()), "[1, 106, 50]")
+    # The byte-level tokenizers keep the pair they always had.
+    var llada = Tokenizer(GGUFFile(FIX + "llada-tokenizer.gguf"))
+    assert_equal(_show(llada.eog_ids()), "[126081, 126348]")
+    assert_true(llada.is_eog(126348) and llada.is_eog(126081))
+    assert_true(not llada.is_eog(126080))
+
+
+def test_gemma4_no_special_token_text_contains_another() raises:
+    # The partition cuts one special token at a time, longest first. With no
+    # text inside another, the order among them cannot change the ids.
+    var tok = _real()
+    var sp = tok.g4.specials.copy()
+    assert_equal(len(sp), 24)
+    for a in sp:
+        for b in sp:
+            if a != b:
+                var outer = tok.g4.tokens[a].copy()
+                var inner = tok.g4.tokens[b].copy()
+                assert_true(inner not in outer, inner + " is inside " + outer)
 
 
 def test_gemma4_chat_prompt_matches_the_chat_template() raises:

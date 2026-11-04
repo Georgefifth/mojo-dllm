@@ -814,6 +814,7 @@ def gemma4_tiny() -> None:
     tokens += [f"<0x{b:02X}>" for b in range(256)]
     types += [6] * 256
     plain = [block, "a", "b", "c", "ab", "bc", "abc", block + "a", "\n", "\n\n", "\n\n\n", "a\n", block * 2, "\u00e9"]
+    plain_start = len(tokens)
     tokens += plain
     types += [1] * len(plain)
     merges = [
@@ -827,21 +828,33 @@ def gemma4_tiny() -> None:
         "a b",  # 7: the same pair again; llama.cpp keeps the first rank, so this one is never used
     ]
 
-    def write(name: str, add_bos: bool, *, add_eos: bool | None = None, tokens=tokens, types=types, merges=merges):
+    def write(
+        name: str,
+        add_bos: bool,
+        *,
+        add_eos: bool | None = None,
+        tokens=tokens,
+        types=types,
+        merges=merges,
+        omit: tuple[str, ...] = (),
+        ids: dict[str, int] | None = None,
+        scheme: str | None = None,
+    ):
         w = GGUFWriter(str(OUT / "gemma4-tiny" / name), "gemma4")
         w.add_string("tokenizer.ggml.model", "gemma4")
         w.add_array("tokenizer.ggml.tokens", list(tokens))
         w.add_array("tokenizer.ggml.token_type", list(types))
         w.add_array("tokenizer.ggml.merges", list(merges))
-        w.add_uint32("tokenizer.ggml.bos_token_id", 2)
-        w.add_uint32("tokenizer.ggml.eos_token_id", 1)
-        w.add_uint32("tokenizer.ggml.unknown_token_id", 3)
-        w.add_uint32("tokenizer.ggml.padding_token_id", 0)
-        w.add_uint32("tokenizer.ggml.mask_token_id", 4)
+        special = {"bos": 2, "eos": 1, "unknown": 3, "padding": 0, "mask": 4, **(ids or {})}
+        for key, value in special.items():
+            if key not in omit:
+                w.add_uint32(f"tokenizer.ggml.{key}_token_id", value)
         w.add_bool("tokenizer.ggml.add_space_prefix", False)
         w.add_bool("tokenizer.ggml.add_bos_token", add_bos)
         if add_eos is not None:
             w.add_bool("tokenizer.ggml.add_eos_token", add_eos)
+        if scheme is not None:
+            w.add_string("tokenizer.ggml.metaspace.prepend_scheme", scheme)
         w.write_header_to_file()
         w.write_kv_data_to_file()
         w.write_tensors_to_file()
@@ -858,6 +871,17 @@ def gemma4_tiny() -> None:
     write("bad-byte-text.gguf", add_bos=False, tokens=no_byte)
     write("merge-without-space.gguf", add_bos=False, merges=merges[:3] + ["ab"] + merges[3:])
     write("short-types.gguf", add_bos=False, types=types[:-1])
+    write("no-bos-id.gguf", add_bos=True, omit=("bos",))
+    write("bos-out-of-range.gguf", add_bos=True, ids={"bos": len(tokens) + 14})
+    write("eos-flag-without-id.gguf", add_bos=True, add_eos=True, omit=("eos",))
+    write("metaspace-first.gguf", add_bos=True, scheme="first")
+    write("metaspace-never.gguf", add_bos=True, scheme="never")
+    duplicate = list(tokens)
+    duplicate[plain_start + 2] = duplicate[plain_start + 1]
+    write("duplicate-token.gguf", add_bos=True, tokens=duplicate)
+    empty = list(tokens)
+    empty[-1] = ""
+    write("empty-token.gguf", add_bos=True, tokens=empty)
 
 
 def entropy_rows() -> None:

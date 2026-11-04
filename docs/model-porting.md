@@ -153,7 +153,9 @@ input. Shape agreement does not establish matching weights or logits.
 
 If `tokenizer.ggml.pre` is new, add its pre-tokenizer to
 `tokenizer/bpe.mojo` and golden cases to `scripts/gen_tokenizer_fixture.py`.
-llama.cpp's regex for each pre-tokenizer is in `src/llama-vocab.cpp`.
+llama.cpp's regex for each pre-tokenizer is in `src/llama-vocab.cpp`. A model
+whose `tokenizer.ggml.model` is not `gpt2` needs its own module, as `gemma4`
+has in `tokenizer/gemma4.mojo`; `Tokenizer` picks it from that key.
 
 ## 5. Sampler
 
