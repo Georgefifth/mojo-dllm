@@ -22,6 +22,7 @@ from main import (
     _logits_gemma,
     is_top_level_help,
     model_error,
+    version_line,
     stop_json,
     usage,
     usage_for,
@@ -304,6 +305,21 @@ def test_help_exits_zero_and_wins_over_other_problems() raises:
     assert_equal(late.text, usage_for("run"))
     assert_equal(execute(["mojo-dllm", "run", "--help", "--prompt"]), 0)
     assert_equal(execute(["mojo-dllm", "--help"]), 0)
+
+
+def test_version_flag_prints_one_line_and_exits_zero() raises:
+    var d = _decide("--version", [])
+    assert_equal(d.code, 0)
+    assert_true(not d.is_error)
+    assert_true(not d.proceed)
+    assert_equal(d.text, version_line())
+    assert_true(not d.text.__contains__("\n"))
+    assert_true(usage().startswith(version_line() + ": "))
+    assert_equal(execute(["mojo-dllm", "--version"]), 0)
+
+
+def test_usage_mentions_the_version_flag() raises:
+    assert_true(usage().__contains__("mojo-dllm --version"))
 
 
 def test_usage_errors_exit_two() raises:
