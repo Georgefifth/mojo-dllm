@@ -8,6 +8,20 @@ semantic versioning (0.y: minor bumps may break things).
 
 ### Added
 
+- The DiffusionGemma reference (issues #66 and #62). `scripts/build_dg_ref.sh`
+  builds the ggml-org/llama.cpp#24423 branch at a pinned commit, CPU only and
+  offline, into its own tree beside the mainline checkout. `tools/ref/dg_ref.cpp`
+  writes the canvas logits of one denoising step for a fixed prompt and canvas:
+  the unified `[prompt | canvas]` pass or the prompt K/V path (prefill, then one
+  decode step), each with or without self-conditioning from a given
+  previous-step buffer. `bench/parity.py --arch diffusion-gemma` runs the
+  reference phase, and a comparison phase that stops with a message until
+  mojo-dllm's own outputs exist (#64). The comparison's bound comes from the
+  LLaDA evidence plus a check on each row's largest logit, and every case
+  records how far the reference lies from itself. `bench/check_dg_bound.py`
+  shows the bound rejecting a missing final soft-cap and a dropped layer scale
+  (`bench/checks/2026-11-04-dg-bound.json`). The tokenizer goldens for `gemma4`
+  are in `tests/fixtures/gemma4-tokenizer-golden.tsv`, with their provenance.
 - DiffusionGemma's entropy-bounded denoiser (`_generate_diffusion_gemma`,
   issue #65): a random canvas over the whole vocabulary, a per-position
   argmax, entropy and draw from one pass over each logits row, acceptance of
