@@ -54,6 +54,7 @@ live in `tests/fixtures/` and come from scripts, never from hand:
 | Fixture | Made by | Checks |
 |---|---|---|
 | `kquants.gguf`, `bad-magic.gguf`, `tiny-llada.gguf`, `tiny-llada.expected.f32`, `tiny-dream.gguf`, `tiny-dream.expected.f32`, `malformed/`, `metadata/` | `scripts/gen_fixtures.py` | GGUF parsing and rejection, decoders, `ModelConfig` validation, the forward pass against a numpy reference |
+| `tiny-diffusion-gemma.gguf`, `diffusion-gemma/` | `scripts/gen_fixtures.py` | the `diffusion-gemma` config (seed 610061): a 2-layer model with one sliding and one global layer, 4 experts, the tensor names and types of the real file, and one file per refusal (metadata only, or zero-filled tensors) |
 | `dequant-types.gguf`, `unsupported-embedding.gguf` | `scripts/gen_fixtures.py` | Q8_0/Q5_K/BF16/Q5_0 references (seed 340034) and embedding rejection before CPU/GPU allocation (no RNG) |
 | `llada-tokenizer.gguf`, `llada-tokenizer-golden.tsv`, `dream-tokenizer.gguf`, `dream-tokenizer-golden.tsv` | `scripts/gen_tokenizer_fixture.py` | tokenizer ids against `llama-tokenize` |
 | `golden-generation.tsv` | `UPDATE_GOLDEN=1 build/tests/test_golden` | tiny LLaDA/Dream token sequences, forward-pass counts, early stopping and per-step commits |
