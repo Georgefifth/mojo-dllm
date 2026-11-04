@@ -833,6 +833,16 @@ def test_bad_tunables_are_refused_by_name() raises:
     with assert_raises(contains="--eb-t-max"):
         _ = _run(m, prompt, c)
     c = _cfg(1)
+    c.eb_t_max = 0.0  # the CLI refuses it first; a library caller gets this
+    with assert_raises(contains="--eb-t-max"):
+        _ = _run(m, prompt, c)
+    # Zero is valid for t_min and for stability (the reference allows both).
+    c = _cfg(1)
+    c.eb_t_min = 0.0
+    assert_equal(_run(m, prompt, c).steps_taken, 2)
+    c = _cfg(1)
+    c.eb_stability = 0
+    assert_equal(_run(m, prompt, c).steps_taken, 1)
     c = _cfg(1)
     c.eb_bound = -0.1
     with assert_raises(contains="--eb-bound"):
