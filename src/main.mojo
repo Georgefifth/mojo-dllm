@@ -19,7 +19,7 @@ from std.sys import argv, exit, num_logical_cores
 from std.time import perf_counter_ns
 
 from cli.args import Args, parse_csv_ints, unknown_flag_error
-from cli.visual import CanvasPrinter
+from cli.visual import CanvasPrinter, prints_answer
 from mojo_dllm.formats.gguf import GGUFFile, GGUF_TYPE_ARRAY
 from mojo_dllm.diffusion.sampler import (
     GenConfig,
@@ -600,13 +600,14 @@ def _run[
     for s in [tok.eos_id, tok.eot_id]:
         if s >= 0:
             cfg.stop_ids.append(s)
+    var is_tty = external_call["isatty", c_int](c_int(1)) != 0
     var printer = CanvasPrinter(
         tok^,
         len(prompt),
         model.config().mask_id,
         a.has("visual"),
         a.int_or("visual-interval", 1),
-        external_call["isatty", c_int](c_int(1)) != 0,
+        is_tty,
         getenv("NO_COLOR"),
     )
     var res = generate_observed(model, prompt, cfg, printer)
@@ -682,7 +683,8 @@ def _run[
             + "}"
         )
         return
-    print(text)
+    if prints_answer(a.has("visual"), is_tty):
+        print(text)
     if verbose:
         print()
         print(
