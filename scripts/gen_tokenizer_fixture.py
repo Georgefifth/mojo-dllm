@@ -16,8 +16,9 @@ special-token parsing on and no BOS added, which is how mojo-dllm encodes a
 formatted chat prompt.
 
 gemma4 differs in four ways. Its fixture (tests/fixtures/gemma4-tokenizer.gguf)
-holds the tokenizer keys without `tokenizer.ggml.scores`, which a BPE tokenizer
-never reads and which would add a megabyte. llama-tokenize gets --no-escape, so a
+holds the tokenizer keys without `tokenizer.ggml.scores` (never read) and with only the
+merges that apply to the golden cases (472 of 514,906), so it is 5.5 MB, not 14.7.
+llama-tokenize gets --no-escape, so a
 literal backslash-n in a case stays two characters. The generator checks, for every
 case, that the ids with the BOS the model adds on its own equal [bos] + the ids
 without it, and that the llama.cpp checkout is the commit scripts/build_dg_ref.sh
@@ -158,6 +159,37 @@ GEMMA4_CASES = [
 ]
 
 
+def fired_merges(tokens: list[str], types: list[int], merges: list[str], cases: list[str]) -> set[int]:
+    """Indices of the merges that apply when `cases` are encoded as llama.cpp's gemma4 tokenizer does.
+
+    A merge that is never applied cannot change any of these encodings, so a fixture that keeps only the fired
+    merges, in their order, gives the same ids for these cases at 1/1000 of the size.
+    """
+    ranks: dict[str, int] = {}
+    for i, m in enumerate(merges):
+        ranks.setdefault(m, i)
+    special = sorted((t for t, ty in zip(tokens, types) if ty in (3, 4)), key=len, reverse=True)
+    splitter = re.compile("(" + "|".join(map(re.escape, special)) + ")")
+    fired: set[int] = set()
+    for text in cases:
+        for frag in splitter.split(text):
+            if not frag or frag in special:
+                continue
+            for word in re.findall(r"[^\n]+|\n+", frag.replace(" ", "\u2581")):
+                syms = list(word)
+                while len(syms) > 1:
+                    best, best_rank = -1, len(merges)
+                    for q in range(len(syms) - 1):
+                        r = ranks.get(syms[q] + " " + syms[q + 1], len(merges))
+                        if r < best_rank:
+                            best, best_rank = q, r
+                    if best < 0:
+                        break
+                    fired.add(best_rank)
+                    syms[best : best + 2] = [syms[best] + syms[best + 1]]
+    return fired
+
+
 # Keys a prefix's fixture leaves out. gemma4's 262,144 scores are all -1000.0, a BPE tokenizer never reads them,
 # and they would add a megabyte.
 SKIP_KEYS = {"gemma4": {"tokenizer.ggml.scores"}}
@@ -179,6 +211,11 @@ def copy_tokenizer(model: pathlib.Path, prefix: str) -> None:
             et = field.types[1]
             if et == GGUFValueType.STRING:
                 vals = [bytes(field.parts[i]).decode("utf-8", errors="surrogateescape") for i in field.data]
+                if prefix == "gemma4" and name == "tokenizer.ggml.merges":
+                    tk = [bytes(r.fields["tokenizer.ggml.tokens"].parts[i]).decode() for i in r.fields["tokenizer.ggml.tokens"].data]
+                    ty = [int(r.fields["tokenizer.ggml.token_type"].parts[i][0]) for i in r.fields["tokenizer.ggml.token_type"].data]
+                    keep = sorted(fired_merges(tk, ty, vals, GEMMA4_CASES))
+                    vals = [vals[i] for i in keep]
                 w.add_array(name, vals)
             else:
                 w.add_array(name, [int(field.parts[i][0]) for i in field.data])

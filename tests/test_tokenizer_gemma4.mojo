@@ -1,7 +1,7 @@
 """The gemma4 tokenizer on DiffusionGemma's real vocabulary (issue #62).
 
-`tests/fixtures/gemma4-tokenizer.gguf` holds the 262,144 tokens and 514,906
-merges of the Q4_K_M file, and `gemma4-tokenizer-golden.tsv` the ids that
+`tests/fixtures/gemma4-tokenizer.gguf` holds the 262,144 tokens and the 472
+merges (of 514,906) that apply to those strings, from the Q4_K_M file, and `gemma4-tokenizer-golden.tsv` the ids that
 `llama-tokenize` from the ggml-org/llama.cpp#24423 branch gives for 54 strings
 on the full model (`gemma4-tokenizer-golden.provenance.json` has the commit
 and the command). The tiny vocabulary in `tests/test_gemma4_tiny.mojo` covers
@@ -460,6 +460,19 @@ def test_gemma4_no_special_token_text_contains_another() raises:
                 assert_true(inner not in outer, inner + " is inside " + outer)
 
 
+def test_gemma4_fixture_holds_the_tokens_and_the_merges_the_goldens_use() raises:
+    # scripts/gen_tokenizer_fixture.py copies the tokens whole, keeps only the
+    # merges that fire for the golden cases, and leaves the scores out.
+    var g = GGUFFile(FIX + "gemma4-tokenizer.gguf")
+    assert_equal(g.get_str("tokenizer.ggml.model"), "gemma4")
+    assert_equal(g.array_len("tokenizer.ggml.tokens"), 262144)
+    assert_equal(g.array_len("tokenizer.ggml.token_type"), 262144)
+    assert_equal(g.array_len("tokenizer.ggml.merges"), 472)
+    assert_true(not g.has_key("tokenizer.ggml.scores"))
+    assert_equal(g.n_tensors(), 0)
+    assert_true("<|turn>" in g.get_str("tokenizer.chat_template"))
+
+
 def test_gemma4_chat_prompt_matches_the_chat_template() raises:
     # The strings are what tokenizer.chat_template renders (the first three
     # golden cases were made that way); the ids are the reference's.
@@ -502,6 +515,10 @@ def test_gemma4_chat_prompt_follows_the_template_on_edge_cases() raises:
     assert_equal(
         gemma4_chat_prompt(["user"], ["  hi \n\t"]),
         "<bos><|turn>user\nhi<turn|>\n<|turn>model\n",
+    )
+    assert_equal(
+        gemma4_chat_prompt(["system", "user"], [" \tsys \n", "u"], False),
+        "<bos><|turn>system\nsys<turn|>\n<|turn>user\nu<turn|>\n",
     )
     # A no-break space is not stripped: isspace is false for its bytes.
     assert_equal(
