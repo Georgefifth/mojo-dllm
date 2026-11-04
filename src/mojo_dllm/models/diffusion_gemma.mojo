@@ -27,6 +27,7 @@ from mojo_dllm.kernels.ops import (
 )
 from mojo_dllm.kernels.packed import PackedMatrix, pgemm
 from mojo_dllm.kernels.qgemm import QActs, quantize_acts
+from mojo_dllm.kernels.softembed import EmbeddingT, soft_embed, softmax_rows
 from mojo_dllm.models.transformer import (
     ModelConfig,
     _load_vector,
@@ -266,6 +267,13 @@ struct DiffusionGemma(Movable):
     var qa_ffn: QActs
     var routing: Routing
     var moe_ws: MoEWorkspace
+    var sc_norm: Floats
+    var sc_gate: List[PackedMatrix]
+    var sc_up: List[PackedMatrix]
+    var sc_down: List[PackedMatrix]
+    """The self-conditioning MLP, one matrix each when the file has it, else none."""
+    var sc_embt: List[EmbeddingT]
+    """The transposed embedding table, built by the first self-conditioned pass."""
 
     def __init__(out self, path: String, threads: Int, max_tokens: Int) raises:
         self.gguf = GGUFFile(path)
@@ -341,6 +349,34 @@ struct DiffusionGemma(Movable):
         self.qa_ffn = QActs(T, c.ffn, 32)
         self.routing = Routing(T, c.n_experts, c.n_experts_used)
         self.moe_ws = MoEWorkspace(T, self.layers[0].experts)
+        self.sc_gate = List[PackedMatrix]()
+        self.sc_up = List[PackedMatrix]()
+        self.sc_down = List[PackedMatrix]()
+        self.sc_embt = List[EmbeddingT]()
+        if self.gguf.has_tensor("self_cond_gate.weight"):
+            self.sc_norm = _load_vector(
+                self.gguf, "self_cond_pre_norm.weight", d
+            )
+            self.sc_gate.append(
+                _load_matrix(self.gguf, "self_cond_gate.weight", c.ffn, d)
+            )
+            self.sc_up.append(
+                _load_matrix(self.gguf, "self_cond_up.weight", c.ffn, d)
+            )
+            self.sc_down.append(
+                _load_matrix(self.gguf, "self_cond_down.weight", d, c.ffn)
+            )
+            if (
+                self.sc_gate[0].block_size != 256
+                or self.sc_up[0].block_size != 256
+                or self.sc_down[0].block_size != 32
+            ):
+                raise Error(
+                    "self_cond gate and up must be 256-wide quantized and down"
+                    " 32-wide, like the dense MLP"
+                )
+        else:
+            self.sc_norm = Floats(0)
         self.rope_cos = List[Floats]()
         self.rope_sin = List[Floats]()
         for kind in range(2):
@@ -392,9 +428,18 @@ struct DiffusionGemma(Movable):
                 )
         return n - c.canvas
 
-    def _embed(mut self, tokens: List[Int], pos0: Int, P: Int) raises:
-        """Rows for the tokens at positions pos0 ..: embed * sqrt(n_embd), and
-        for the rows at or past P (the canvas) an RMS norm without weight."""
+    def _embed(
+        mut self,
+        tokens: List[Int],
+        pos0: Int,
+        P: Int,
+        prev_addr: Int = 0,
+        prev_temp_inv: Float32 = 1.0,
+    ) raises:
+        """Rows for the tokens at positions pos0 ..: embed * sqrt(n_embd); the
+        rows at or past P (the canvas) then get the self-conditioning signal,
+        if `prev_addr` holds the previous step's logits, and an RMS norm
+        without weight."""
         var c = self.cfg
         var d = c.hidden
         var row_bytes = self.embd.row_bytes()
@@ -409,6 +454,10 @@ struct DiffusionGemma(Movable):
             for e in range(d):
                 xr.unsafe_store(e, xr.unsafe_load(e) * embed_scale)
         var first_canvas = max(P - pos0, 0)
+        if prev_addr != 0:
+            self._self_condition(
+                first_canvas, rows - first_canvas, prev_addr, prev_temp_inv
+            )
         rmsnorm(
             self.x.ptr().unsafe_offset(first_canvas * d),
             self.ones.ptr(),
@@ -419,19 +468,77 @@ struct DiffusionGemma(Movable):
             self.threads,
         )
 
+    def _self_condition(
+        mut self, row0: Int, C: Int, prev_addr: Int, temp_inv: Float32
+    ) raises:
+        """Add the self-conditioning signal to canvas rows row0 ..< row0 + C of `x`.
+
+        The previous step's logits [C, vocab] are replaced by their softmax at
+        the previous temperature, in place, and multiplied into the embedding
+        table; the result times sqrt(n_embd) goes through the weighted norm and
+        the gated MLP, down(gelu(gate) * up), and is added to the embedding.
+        """
+        var c = self.cfg
+        var d = c.hidden
+        var th = self.threads
+        if len(self.sc_gate) == 0:
+            raise Error("this file has no self-conditioning tensors")
+        if len(self.sc_embt) == 0:
+            self.sc_embt.append(
+                EmbeddingT(
+                    self.gguf.data_addr(self.embd),
+                    self.embd.ggml_type,
+                    c.vocab,
+                    d,
+                    th,
+                )
+            )
+        var prev = F32Ptr(unsafe_from_address=prev_addr)
+        softmax_rows(prev, C, c.vocab, temp_inv, th)
+        soft_embed(prev, self.sc_embt[0], self.moe_in.ptr(), C, th)
+        var embed_scale = sqrt(Float32(d))
+        for i in range(C * d):
+            self.moe_in[i] = self.moe_in[i] * embed_scale
+        rmsnorm(
+            self.moe_in.ptr(),
+            self.sc_norm.ptr(),
+            self.xn.ptr(),
+            C,
+            d,
+            c.eps,
+            th,
+        )
+        quantize_acts(self.xn.ptr(), C, d, self.qa_h)
+        pgemm(self.sc_gate[0], self.qa_h, C, self.g.ptr(), c.ffn, th)
+        pgemm(self.sc_up[0], self.qa_h, C, self.u.ptr(), c.ffn, th)
+        for i in range(C * c.ffn):
+            self.g[i] = gelu_tanh(self.g[i]) * self.u[i]
+        quantize_acts(self.g.ptr(), C, c.ffn, self.qa_ffn)
+        pgemm(self.sc_down[0], self.qa_ffn, C, self.mlp.ptr(), d, th)
+        add_inplace(self.x.ptr().unsafe_offset(row0 * d), self.mlp.ptr(), C * d)
+
     def run_layers(mut self, tokens: List[Int], n_layers: Int) raises -> Int:
         """Embed [prompt | canvas] and run the first `n_layers` layers.
 
         Leaves the hidden state in `self.x` and returns the prompt length.
         It overwrites every layer's cache rows, so a `prefill` does not survive it.
         """
+        return self._run(tokens, n_layers, 0, 1.0)
+
+    def _run(
+        mut self,
+        tokens: List[Int],
+        n_layers: Int,
+        prev_addr: Int,
+        prev_temp_inv: Float32,
+    ) raises -> Int:
         var c = self.cfg
         if n_layers < 0 or n_layers > c.n_layers:
             raise Error("layer count " + String(n_layers) + " is out of range")
         var P = self._check_tokens(tokens)
         self.cached_prompt = -1
         var T = len(tokens)
-        self._embed(tokens, 0, P)
+        self._embed(tokens, 0, P, prev_addr, prev_temp_inv)
         for li in range(n_layers):
             self._layer(li, T, 0, P, T)
         return P
@@ -479,6 +586,28 @@ struct DiffusionGemma(Movable):
         rows from P on. The prompt rows stay, so any number of steps can follow
         one prefill.
         """
+        self._step(canvas, logits, 0, 1.0)
+
+    def step_sc(
+        mut self, canvas: List[Int], logits: F32Ptr, prev_temp_inv: Float32
+    ) raises:
+        """`step` with self-conditioning from the previous step's logits.
+
+        `logits` holds the previous step's canvas logits [canvas, vocab] on
+        entry and this step's on return. The previous ones are consumed first:
+        softmaxed in place at `prev_temp_inv` (1 / the previous temperature),
+        which is why one 268 MB buffer serves a whole run.
+        """
+        _check_temp(prev_temp_inv)
+        self._step(canvas, logits, Int(logits), prev_temp_inv)
+
+    def _step(
+        mut self,
+        canvas: List[Int],
+        logits: F32Ptr,
+        prev_addr: Int,
+        prev_temp_inv: Float32,
+    ) raises:
         var c = self.cfg
         if self.cached_prompt < 0:
             raise Error("run prefill before step: no prompt is cached")
@@ -491,7 +620,7 @@ struct DiffusionGemma(Movable):
             )
         self._check_ids(canvas)
         var P = self.cached_prompt
-        self._embed(canvas, P, P)
+        self._embed(canvas, P, P, prev_addr, prev_temp_inv)
         for li in range(c.n_layers):
             self._layer(li, c.canvas, P, P, P + c.canvas)
         self._head(0, c.canvas, logits)
@@ -686,12 +815,33 @@ struct DiffusionGemma(Movable):
             for e in range(d):
                 self.x[r * d + e] = self.x[r * d + e] * s
 
+    def forward_sc(
+        mut self, tokens: List[Int], logits: F32Ptr, prev_temp_inv: Float32
+    ) raises:
+        """`forward` with self-conditioning from the previous step's logits.
+
+        `logits` holds the previous step's canvas logits [canvas, vocab] on
+        entry and this step's on return; see `step_sc`.
+        """
+        _check_temp(prev_temp_inv)
+        var c = self.cfg
+        var P = self._run(tokens, c.n_layers, Int(logits), prev_temp_inv)
+        self._head(P, len(tokens) - P, logits)
+
     def forward(mut self, tokens: List[Int], logits: F32Ptr) raises:
         """Canvas logits [canvas, vocab] of one unified pass over [prompt | canvas].
         """
         var c = self.cfg
         var P = self.run_layers(tokens, c.n_layers)
         self._head(P, len(tokens) - P, logits)
+
+
+def _check_temp(inv: Float32) raises:
+    if not (inv > 0) or inv > 3.0e38:
+        raise Error(
+            "the previous temperature must be positive and finite, got 1 / "
+            + String(inv)
+        )
 
 
 def _softcap(x: F32Ptr, n: Int, cap: Float32, threads: Int) raises:
