@@ -27,6 +27,9 @@ def test_softmax_rows_matches_a_scalar_reference() raises:
                 Float32((i * 7919 + r * 104729) % 601 - 300) / 10.0
             )
         x[r * width + 3] = -1e30
+    # Row 4 runs to 900: without the row maximum subtracted its exponentials overflow.
+    for i in range(width):
+        x[4 * width + i] = Float32(i * 3)
     var inv = Float32(1.25)
     for r in range(rows):
         var mx = Float64(-1e300)
