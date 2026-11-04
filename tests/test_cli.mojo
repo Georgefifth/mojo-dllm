@@ -5,6 +5,7 @@ from cli.args import Args
 from mojo_dllm.diffusion.sampler import GenResult
 from mojo_dllm.formats.gguf import GGUFFile
 from mojo_dllm.sys.mmap import Mapping
+from mojo_dllm.tokenizer.bpe import Tokenizer
 from main import (
     Decision,
     boolean_flags,
@@ -13,6 +14,7 @@ from main import (
     check_arch_flags,
     command_spec,
     decide,
+    encode_prompt,
     execute,
     inspect_text,
     json_str,
@@ -62,6 +64,42 @@ def test_chat_templates_strip_user_text() raises:
     assert_equal(chat_prompt("llada", " \thi\n"), llada)
     assert_equal(chat_prompt("dream", " \thi\n"), dream)
     assert_equal(chat_prompt("unknown", "hi"), llada)
+
+
+def test_chat_template_for_diffusion_gemma() raises:
+    # tokenizer.chat_template: <bos>, a user turn, then an open model turn.
+    assert_equal(
+        chat_prompt("diffusion-gemma", " \thi\n"),
+        "<bos><|turn>user\nhi<turn|>\n<|turn>model\n",
+    )
+
+
+def test_run_prompt_for_diffusion_gemma_has_one_bos() raises:
+    var tok = Tokenizer(GGUFFile("tests/fixtures/gemma4-tokenizer.gguf"))
+    var spec = command_spec("run")
+    var chat = Args(["x", "run", "--prompt", "Hi"], spec.values, spec.booleans)
+    var ids = encode_prompt(tok, "diffusion-gemma", chat)
+    # <bos> from the template is the only BOS; <|turn> opens the user turn
+    # and the model turn, and <turn|> closes the user turn.
+    assert_equal(ids[0], 2)
+    assert_equal(ids[1], 105)
+    var bos = 0
+    var opens = 0
+    var closes = 0
+    for t in ids:
+        bos += 1 if t == 2 else 0
+        opens += 1 if t == 105 else 0
+        closes += 1 if t == 106 else 0
+    assert_equal(bos, 1)
+    assert_equal(opens, 2)
+    assert_equal(closes, 1)
+    var raw = Args(
+        ["x", "run", "--prompt", "Hi", "--no-chat"], spec.values, spec.booleans
+    )
+    var plain = encode_prompt(tok, "diffusion-gemma", raw)
+    assert_equal(len(plain), 2)
+    assert_equal(plain[0], 2)
+    assert_equal(tok.decode([plain[1]], skip_special=False), "Hi")
 
 
 def test_json_escapes_and_preserves_unicode() raises:

@@ -15,17 +15,21 @@ The golden ids come from llama.cpp's tokenizer on the full model file with
 special-token parsing on and no BOS added, which is how mojo-dllm encodes a
 formatted chat prompt.
 
-gemma4 differs in three ways. Its tokenizer metadata (262,144 tokens and 514,906
-merges) is not copied, so it needs --golden-only; the tokenizer fixture waits for
-the implementation that reads it. llama-tokenize gets --no-escape, so a literal
-backslash-n in a case stays two characters. And the generator checks, for every
+gemma4 differs in four ways. Its fixture (tests/fixtures/gemma4-tokenizer.gguf)
+holds the tokenizer keys without `tokenizer.ggml.scores`, which a BPE tokenizer
+never reads and which would add a megabyte. llama-tokenize gets --no-escape, so a
+literal backslash-n in a case stays two characters. The generator checks, for every
 case, that the ids with the BOS the model adds on its own equal [bos] + the ids
-without it, that the llama.cpp checkout is the commit scripts/build_dg_ref.sh pins,
-and it writes tests/fixtures/gemma4-tokenizer-golden.provenance.json: the commit,
-the model file and its sha256, and the command.
+without it, and that the llama.cpp checkout is the commit scripts/build_dg_ref.sh
+pins. And it writes tests/fixtures/gemma4-tokenizer-golden.provenance.json: the
+commit, the model file and its sha256, and the command.
 
-  uv run --only-group fixtures python scripts/gen_tokenizer_fixture.py --golden-only \\
+  uv run --only-group fixtures python scripts/gen_tokenizer_fixture.py \\
       MODEL.gguf $DG_LLAMA_SRC/build/bin/llama-tokenize gemma4
+
+--golden-only rewrites the goldens and the provenance and leaves the fixture alone
+(it needs no gguf package). The reader maps the model file and touches only its
+header; no tensor is read.
 """
 
 from __future__ import annotations
@@ -154,6 +158,11 @@ GEMMA4_CASES = [
 ]
 
 
+# Keys a prefix's fixture leaves out. gemma4's 262,144 scores are all -1000.0, a BPE tokenizer never reads them,
+# and they would add a megabyte.
+SKIP_KEYS = {"gemma4": {"tokenizer.ggml.scores"}}
+
+
 def copy_tokenizer(model: pathlib.Path, prefix: str) -> None:
     # Imported here so the golden-only path (and its tests) need no gguf package.
     from gguf import GGUFReader, GGUFValueType, GGUFWriter
@@ -161,7 +170,7 @@ def copy_tokenizer(model: pathlib.Path, prefix: str) -> None:
     r = GGUFReader(str(model))
     w = GGUFWriter(str(OUT / f"{prefix}-tokenizer.gguf"), prefix)
     for name, field in r.fields.items():
-        if not name.startswith("tokenizer."):
+        if not name.startswith("tokenizer.") or name in SKIP_KEYS.get(prefix, ()):
             continue
         vt = field.types[0]
         if vt == GGUFValueType.STRING:
@@ -273,8 +282,6 @@ def main() -> int:
     golden_only = len(args) != len(sys.argv) - 1
     model = pathlib.Path(args[0])
     prefix = args[2] if len(args) > 2 else "llada"
-    if prefix in PROFILES and not golden_only:
-        raise SystemExit(f"{prefix}: pass --golden-only; its tokenizer metadata is not copied into a fixture")
     if not golden_only:
         copy_tokenizer(model, prefix)
     golden(model, args[1], prefix)

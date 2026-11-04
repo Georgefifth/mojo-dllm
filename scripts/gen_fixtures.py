@@ -24,6 +24,7 @@ Outputs (deterministic, seed 1234 unless noted):
   tests/fixtures/tiny-diffusion-gemma.gguf
                                    2-layer diffusion-gemma model (one sliding, one global, 4 experts), seed 610061
   tests/fixtures/diffusion-gemma/  that model's metadata and tensor directory with one thing wrong per file
+  tests/fixtures/gemma4-tiny/      a 279-token gemma4 vocabulary and variants with one thing wrong each (issue #62)
 """
 
 from __future__ import annotations
@@ -789,8 +790,74 @@ def main() -> None:
     metadata_cases()
     entropy_rows()
     diffusion_gemma()
+    gemma4_tiny()
     for p in sorted(OUT.iterdir()):
         print(f"{p.stat().st_size:>9}  {p.relative_to(ROOT)}")
+
+
+GEMMA4_TINY_BYTE0 = 9
+"""Id of <0x00> in the tiny gemma4 vocabulary: <0xNN> is GEMMA4_TINY_BYTE0 + NN."""
+
+
+def gemma4_tiny() -> None:
+    """A small gemma4 vocabulary whose every encoding is derivable by hand (see tests/test_gemma4_tiny.mojo).
+
+    It differs from the real one in ids only: `add_bos_token` is false, so a test can see the BOS forced on, and the
+    merges are chosen so that a wrong rank order, a missing newline split and a missing whole-run rule each change
+    the ids. Four variants break one thing each.
+    """
+    block = "\u2581"
+    controls = ["<pad>", "<eos>", "<bos>", "<unk>", "<mask>", "<|turn>", "<turn|>"]
+    tokens = controls + ["<|channel>", "<|tool_response>"]
+    types = [3] * len(controls) + [4, 4]
+    assert len(tokens) == GEMMA4_TINY_BYTE0
+    tokens += [f"<0x{b:02X}>" for b in range(256)]
+    types += [6] * 256
+    plain = [block, "a", "b", "c", "ab", "bc", "abc", block + "a", "\n", "\n\n", "\n\n\n", "a\n", block * 2, "\u00e9"]
+    tokens += plain
+    types += [1] * len(plain)
+    merges = [
+        "a b",  # 0: ab
+        "b c",  # 1: bc
+        "ab c",  # 2: abc
+        f"{block} a",  # 3: ▁a
+        "\n \n",  # 4: a run of two newlines
+        "a \n",  # 5: would join a letter to a newline if the pre-split did not stop it
+        f"{block} {block}",  # 6: ▁▁
+        "a b",  # 7: the same pair again; llama.cpp keeps the first rank, so this one is never used
+    ]
+
+    def write(name: str, add_bos: bool, *, add_eos: bool | None = None, tokens=tokens, types=types, merges=merges):
+        w = GGUFWriter(str(OUT / "gemma4-tiny" / name), "gemma4")
+        w.add_string("tokenizer.ggml.model", "gemma4")
+        w.add_array("tokenizer.ggml.tokens", list(tokens))
+        w.add_array("tokenizer.ggml.token_type", list(types))
+        w.add_array("tokenizer.ggml.merges", list(merges))
+        w.add_uint32("tokenizer.ggml.bos_token_id", 2)
+        w.add_uint32("tokenizer.ggml.eos_token_id", 1)
+        w.add_uint32("tokenizer.ggml.unknown_token_id", 3)
+        w.add_uint32("tokenizer.ggml.padding_token_id", 0)
+        w.add_uint32("tokenizer.ggml.mask_token_id", 4)
+        w.add_bool("tokenizer.ggml.add_space_prefix", False)
+        w.add_bool("tokenizer.ggml.add_bos_token", add_bos)
+        if add_eos is not None:
+            w.add_bool("tokenizer.ggml.add_eos_token", add_eos)
+        w.write_header_to_file()
+        w.write_kv_data_to_file()
+        w.write_tensors_to_file()
+        w.close()
+
+    (OUT / "gemma4-tiny").mkdir(exist_ok=True)
+    write("base.gguf", add_bos=False)
+    write("eos.gguf", add_bos=True, add_eos=True)
+    no_byte = list(tokens)
+    no_byte[GEMMA4_TINY_BYTE0 + 0x78] = "[0x78]"
+    no_byte_types = list(types)
+    no_byte_types[GEMMA4_TINY_BYTE0 + 0x78] = 1
+    write("no-byte-token.gguf", add_bos=False, tokens=no_byte, types=no_byte_types)
+    write("bad-byte-text.gguf", add_bos=False, tokens=no_byte)
+    write("merge-without-space.gguf", add_bos=False, merges=merges[:3] + ["ab"] + merges[3:])
+    write("short-types.gguf", add_bos=False, types=types[:-1])
 
 
 def entropy_rows() -> None:
