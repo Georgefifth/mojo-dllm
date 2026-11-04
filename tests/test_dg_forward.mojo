@@ -6,8 +6,13 @@ from mojo_dllm.kernels.ops import (
     rope_apply,
     rope_table_factors,
 )
-from mojo_dllm.models.diffusion_gemma import KeyRange, key_range
+from mojo_dllm.models.diffusion_gemma import (
+    DiffusionGemma,
+    KeyRange,
+    key_range,
+)
 from mojo_dllm.sys.mem import Bytes, F32Ptr, I32Ptr, Floats
+from mojo_dllm.sys.mmap import Mapping
 
 comptime FIX = "tests/fixtures/"
 
@@ -96,7 +101,9 @@ def test_rope_table_divides_the_angle_by_the_factor() raises:
     for t in range(6):
         for i in range(4):
             var f = Float64(factors[i])
-            var ang = Float64(t) * (Float64(1e6) ** (-2.0 * Float64(i) / 8.0)) / f
+            var ang = (
+                Float64(t) * (Float64(1e6) ** (-2.0 * Float64(i) / 8.0)) / f
+            )
             worst = max(worst, abs(Float64(c[t * 4 + i]) - cos(ang)))
             worst = max(worst, abs(Float64(s[t * 4 + i]) - sin(ang)))
     assert_true(worst < 1e-6, "table error " + String(worst))
@@ -154,8 +161,19 @@ def _attention_case(
         hi.i32().unsafe_store(i, Int32(b))
     var o = Floats(n_q * nh * hd)
     attention_ranges(
-        q.ptr(), k.ptr(), v.ptr(), o.ptr(), lo.i32(), hi.i32(),
-        n_q, n_keys, nh, nkv, hd, scale, 3,
+        q.ptr(),
+        k.ptr(),
+        v.ptr(),
+        o.ptr(),
+        lo.i32(),
+        hi.i32(),
+        n_q,
+        n_keys,
+        nh,
+        nkv,
+        hd,
+        scale,
+        3,
     )
     var worst = Float64(0)
     for i in range(n_q):
@@ -189,7 +207,9 @@ def _attention_case(
 def test_attention_ranges_match_a_scalar_reference() raises:
     for hd in [16, 64]:
         var worst = _attention_case(hd, 1.0, 9, 12)
-        assert_true(worst < 2e-5, "hd " + String(hd) + " error " + String(worst))
+        assert_true(
+            worst < 2e-5, "hd " + String(hd) + " error " + String(worst)
+        )
 
 
 def test_attention_scale_is_the_argument_not_one_over_root_d() raises:
@@ -197,6 +217,199 @@ def test_attention_scale_is_the_argument_not_one_over_root_d() raises:
     assert_true(worst < 2e-5, "scale 0.5 error " + String(worst))
     var worst_root = _attention_case(64, 0.125, 9, 12)
     assert_true(worst_root < 2e-5, "scale 1/8 error " + String(worst_root))
+
+
+struct Case(Movable):
+    """A tiny-fixture case file written by scripts/gen_fixtures.py (layout in dg_cases).
+    """
+
+    var map: Mapping
+    var n_tokens: Int
+    var n_prompt: Int
+    var n_trace: Int
+    var tokens: List[Int]
+    var expected_addr: Int
+    var trace_addr: Int
+
+    def __init__(out self, name: String, canvas: Int, vocab: Int) raises:
+        self.map = Mapping(FIX + "tiny-diffusion-gemma." + name + ".case")
+        var words = I32Ptr(unsafe_from_address=self.map.addr)
+        self.n_tokens = Int(words.unsafe_load(0))
+        self.n_prompt = Int(words.unsafe_load(1))
+        self.n_trace = Int(words.unsafe_load(4))
+        var sc = Int(words.unsafe_load(2))
+        self.tokens = List[Int]()
+        for i in range(self.n_tokens):
+            self.tokens.append(Int(words.unsafe_load(5 + i)))
+        var at = 5 + self.n_tokens
+        if sc != 0:
+            at += canvas * vocab
+        self.expected_addr = self.map.addr + 4 * at
+        self.trace_addr = self.map.addr + 4 * (at + canvas * vocab)
+
+    def expected(self) -> F32Ptr:
+        return F32Ptr(unsafe_from_address=self.expected_addr)
+
+    def trace(self) -> F32Ptr:
+        return F32Ptr(unsafe_from_address=self.trace_addr)
+
+
+def _rel_error(got: F32Ptr, want: F32Ptr, n: Int) -> Float64:
+    var num = Float64(0)
+    var den = Float64(0)
+    for i in range(n):
+        var a = Float64(got.unsafe_load(i))
+        var b = Float64(want.unsafe_load(i))
+        num += (a - b) * (a - b)
+        den += b * b
+    return sqrt(num / den)
+
+
+def _check_rows(
+    what: String, got: F32Ptr, want: F32Ptr, rows: Int, width: Int
+) raises:
+    """Row by row, the model and the numpy pass agree to rounding, bar a few rows.
+
+    The numpy pass repeats the int8 rounding of the activations, so most rows
+    agree to about 2e-7 (f32 against f64 arithmetic). When a rounding step lands
+    on a tie in one and not in the other, one activation moves by a whole step
+    and that row by 1e-3 to 7e-3. Measured on the tiny model: prompt 9, layer 0:
+    1 of 25 rows beyond 1e-5 (worst 6.1e-4); layer 1: 6 of 25 (worst 1.9e-3);
+    logits: 6 of 16 rows (worst 5.6e-3). Prompt 150 logits: worst 7.0e-3. Prompt
+    rows never see canvas ties and stay at 1e-7. So the test asks that at least
+    half the rows agree within 1e-5 and that none is off by more than 2e-2. A
+    wrong formula moves every row by far more than 1e-5.
+    """
+    var close = 0
+    var worst = Float64(0)
+    for r in range(rows):
+        var e = _rel_error(
+            got.unsafe_offset(r * width), want.unsafe_offset(r * width), width
+        )
+        if e < 1e-5:
+            close += 1
+        worst = max(worst, e)
+    assert_true(
+        close * 2 >= rows,
+        what
+        + ": only "
+        + String(close)
+        + " of "
+        + String(rows)
+        + " rows agree within 1e-5",
+    )
+    assert_true(worst < 2e-2, what + ": worst row error " + String(worst))
+
+
+def _model(max_tokens: Int) raises -> DiffusionGemma:
+    return DiffusionGemma(
+        FIX + "tiny-diffusion-gemma.gguf", threads=4, max_tokens=max_tokens
+    )
+
+
+def _check_case(name: String) raises:
+    var m = _model(200)
+    var c = m.config()
+    var cs = Case(name, c.canvas, c.vocab)
+    var logits = Floats(c.canvas * c.vocab)
+    m.forward(cs.tokens, logits.ptr())
+    _check_rows(
+        name + " logits", logits.ptr(), cs.expected(), c.canvas, c.vocab
+    )
+    var agree = 0
+    for r in range(c.canvas):
+        var bg = 0
+        var be = 0
+        for v in range(c.vocab):
+            if logits[r * c.vocab + v] > logits[r * c.vocab + bg]:
+                bg = v
+            if cs.expected().unsafe_load(
+                r * c.vocab + v
+            ) > cs.expected().unsafe_load(r * c.vocab + be):
+                be = v
+        if bg == be:
+            agree += 1
+    assert_true(
+        agree >= c.canvas - 1, name + ": argmax agrees on " + String(agree)
+    )
+
+
+def test_layer_kinds_of_the_tiny_model() raises:
+    var m = _model(32)
+    assert_equal(len(m.layers), 2)
+    assert_true(m.layers[0].sliding)
+    assert_equal(m.layers[0].n_kv, 4)
+    assert_equal(m.layers[0].head, 64)
+    assert_equal(len(m.layers[0].wv), 1)
+    assert_true(not m.layers[1].sliding)
+    assert_equal(m.layers[1].n_kv, 1)
+    assert_equal(m.layers[1].head, 128)
+    assert_equal(len(m.layers[1].wv), 0)
+
+
+def test_each_layer_output_matches_numpy_prompt_9() raises:
+    var m = _model(200)
+    var c = m.config()
+    var cs = Case("p9", c.canvas, c.vocab)
+    assert_equal(cs.n_trace, 2)
+    for layers in [1, 2]:
+        _ = m.run_layers(cs.tokens, layers)
+        _check_rows(
+            "layer " + String(layers - 1),
+            m.x.ptr(),
+            cs.trace().unsafe_offset((layers - 1) * cs.n_tokens * c.hidden),
+            cs.n_tokens,
+            c.hidden,
+        )
+
+
+def test_prompt_rows_match_numpy_to_rounding() raises:
+    # Prompt rows never see the canvas, so no canvas rounding tie reaches them:
+    # they agree to f32 noise (measured 1.1e-7 at layer 0, 1.6e-7 at layer 1).
+    var m = _model(200)
+    var c = m.config()
+    var cs = Case("p9", c.canvas, c.vocab)
+    for layers in [1, 2]:
+        _ = m.run_layers(cs.tokens, layers)
+        var e = _rel_error(
+            m.x.ptr(),
+            cs.trace().unsafe_offset((layers - 1) * cs.n_tokens * c.hidden),
+            cs.n_prompt * c.hidden,
+        )
+        assert_true(
+            e < 1e-5,
+            "prompt rows, layer " + String(layers - 1) + ": " + String(e),
+        )
+
+
+def test_forward_matches_numpy_prompt_9() raises:
+    _check_case("p9")
+
+
+def test_forward_matches_numpy_prompt_150_past_the_window() raises:
+    _check_case("p150")
+
+
+def test_forward_refuses_bad_input() raises:
+    var m = _model(20)
+    var c = m.config()
+    var logits = Floats(c.canvas * c.vocab)
+    var short = List[Int]()
+    for _ in range(c.canvas - 1):
+        short.append(5)
+    with assert_raises(contains="at least the canvas length"):
+        m.forward(short, logits.ptr())
+    var long = List[Int]()
+    for _ in range(21):
+        long.append(5)
+    with assert_raises(contains="exceeds the runtime limit"):
+        m.forward(long, logits.ptr())
+    var bad = List[Int]()
+    for _ in range(c.canvas):
+        bad.append(5)
+    bad[3] = c.vocab
+    with assert_raises(contains="outside the vocabulary"):
+        m.forward(bad, logits.ptr())
 
 
 def main() raises:
