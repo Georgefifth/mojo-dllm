@@ -299,11 +299,17 @@ row to the same relative error as LLaDA's rows reach: the final soft-cap pins
 that logit near 30, so the first four cannot see the cap removed.
 `bench/check_dg_bound.py` shows what the bound rejects.
 
-The model is far more sensitive to rounding than LLaDA. Each case therefore
-records how far the reference lies from itself: the prompt K/V path against the
-unified pass, and the unified pass again with the previous-step logits changed
-by one part in a million. On a random canvas those distances exceed LLaDA's
-worst case, because 8 of 128 experts are picked per token and bidirectional
-attention carries one flipped choice to every row. A failed comparison prints
-them beside the verdict. No DiffusionGemma result is recorded yet, so the
-tables above hold none.
+Each case records how far the reference lies from itself: the prompt K/V path
+against the unified pass, and the unified pass again with the previous-step
+logits changed by one part in a million. On the two LLaDA prompts with a random
+canvas those distances exceed the LLaDA bound (the one-in-a-million change moved
+the output by a median relative RMS of 0.18 to 0.26). No LLaDA spread was
+measured for comparison. The cause is untested: expert routing flips (8 of 128
+experts per token) carried to every row by bidirectional attention are a
+hypothesis. A failed comparison prints these distances beside the verdict. No
+DiffusionGemma result is recorded yet, so the tables above hold none.
+
+The tokenizer goldens in `tests/fixtures/gemma4-tokenizer-golden.tsv` fix the
+encoding only. Decoding the ids through the GGUF vocabulary restores 53 of the
+54 strings; the string holding a literal U+2581 does not come back, because
+decoding turns every U+2581 into a space.
