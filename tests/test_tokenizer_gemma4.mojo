@@ -556,5 +556,35 @@ def test_gemma4_chat_prompt_follows_the_template_on_edge_cases() raises:
         _ = gemma4_chat_prompt(["user", "tool"], ["a", "b"])
 
 
+def test_gemma4_chat_prompt_trims_exactly_the_c_locale_spaces() raises:
+    # The template's |trim strips the bytes C isspace accepts in the C locale:
+    # space, and 9 to 13 (tab, newline, vertical tab, form feed, carriage
+    # return). Every other ASCII byte stays, one step either side of the range
+    # included (8 and 14).
+    var spaces = [9, 10, 11, 12, 13, 32]
+    for c in range(1, 128):
+        var ch = chr(c)
+        var kept = ch + "x" + ch
+        var want = String("x")
+        var is_space = False
+        for s in spaces:
+            if s == c:
+                is_space = True
+        if not is_space:
+            want = kept
+        assert_equal(
+            gemma4_chat_prompt(["user"], [kept]),
+            "<bos><|turn>user\n" + want + "<turn|>\n<|turn>model\n",
+            "byte " + String(c),
+        )
+
+
+def test_gemma4_chat_prompt_refuses_roles_and_contents_of_different_length() raises:
+    with assert_raises(contains="chat messages: 1 roles for 2 contents"):
+        _ = gemma4_chat_prompt(["user"], ["a", "b"])
+    with assert_raises(contains="chat messages: 2 roles for 1 contents"):
+        _ = gemma4_chat_prompt(["user", "assistant"], ["a"])
+
+
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()
