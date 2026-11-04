@@ -111,13 +111,13 @@ at runtime. All cases disable threshold and dual-cache acceleration.
 A job that holds more memory than the machine can spare makes the kernel's global OOM killer pick a victim.
 With systemd's default `OOMPolicy=stop`, systemd then stops every process in the victim's scope, and a job
 started from a terminal lives in that terminal's scope: the shell, the editor session and every agent in the
-window end with it. A measured run of DiffusionGemma-26B on the CPU peaked at about 25 GiB resident, and on a
+window end with it. A measured run of DiffusionGemma-26B on the CPU peaked at about 25.6 GiB resident, and on a
 30 GiB machine with a 2 GiB swapfile that run ended in exactly this way.
 
 `scripts/capped.sh` starts a command in a scope of its own, under a hard cap, so only that scope can fail:
 
 ```bash
-scripts/capped.sh --mem 26G -- build/mojo-dllm run -m model.gguf --prompt "hello"
+scripts/capped.sh --mem 26G -- build/mojo-dllm run --model model.gguf --prompt "hello"
 ```
 
 It sets four things, each for a reason you can check in the documentation of the kernel's cgroup v2 memory
