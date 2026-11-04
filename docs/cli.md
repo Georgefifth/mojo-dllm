@@ -63,6 +63,10 @@ visible. A final frame that was already drawn is not repeated.
 | terminal | non-empty | no | yes |
 | not a terminal | any | no | no; frames separated by one blank line |
 
+On a terminal, `--visual` leaves the last canvas frame on screen and does not
+print the answer a second time. Without `--visual`, or when stdout is not a
+terminal, `run` prints the answer after generation.
+
 Without colour, newly committed tokens have no highlight. Redirected frames
 contain no ANSI escapes. With `--visual --json`, frames still go to stdout
 before the JSON line; consumers should select the line starting with `{`.
