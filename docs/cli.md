@@ -19,6 +19,9 @@ as the value of a flag (`--prompt --help` sets the prompt to `--help`).
 command. Each command declares its flags: a flag the command does not declare
 stops the run (see [Errors](#errors)).
 
+`mojo-dllm --version` prints one line, `mojo-dllm` and the version, and exits
+0. The same version is the `"version"` key of `run --json`.
+
 ## `run`
 
 | Flag | Default | Meaning |
