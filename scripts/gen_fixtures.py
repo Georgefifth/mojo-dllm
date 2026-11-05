@@ -24,6 +24,8 @@ Outputs (deterministic, seed 1234 unless noted):
   tests/fixtures/tiny-diffusion-gemma.gguf
                                    2-layer diffusion-gemma model (one sliding, one global, 4 experts), seed 610061
   tests/fixtures/diffusion-gemma/  that model's metadata and tensor directory with one thing wrong per file
+  tests/fixtures/tiny-diffusion-gemma.*.case
+                                   tokens and the numpy logits of scripts/dg_numpy.py for the forward pass
 """
 
 from __future__ import annotations
@@ -776,6 +778,35 @@ def diffusion_gemma() -> None:
     }
     for name, case in tensor_cases.items():
         write_gemma(out / f"{name}.gguf", **case)
+    dg_cases()
+
+
+# Cases the Mojo forward pass is checked on: the numpy pass of scripts/dg_numpy.py over the tiny model.
+# File layout, little-endian 4-byte words: n_tokens, n_prompt, self-conditioning (0 or 1), 1 / previous
+# temperature (f32), the number of traced layers, the tokens (i32), the previous canvas logits
+# [C, vocab] (f32, only when self-conditioning is on), the expected canvas logits [C, vocab] (f32) and
+# each traced layer's output rows [n_tokens, hidden] (f32).
+DG_CASES = {
+    # Prompt of 9: the sliding window (128) covers it. Prompt of 150: it does not, so the window clips
+    # prompt rows and the canvas reaches only the last 127 prompt tokens in the sliding layer.
+    "p9": dict(prompt=9, seed=7),
+    "p150": dict(prompt=150, seed=8),
+}
+
+
+def dg_cases() -> None:
+    import dg_numpy
+
+    model = dg_numpy.Model(OUT / "tiny-diffusion-gemma.gguf")
+    for name, case in DG_CASES.items():
+        tokens = dg_numpy.tiny_tokens(model, case["prompt"], case["seed"])
+        trace: list = []
+        expected = dg_numpy.forward(model, tokens, case["prompt"], quant=True, trace=trace)
+        keep = trace if case["prompt"] < model.window else []  # the long case checks the logits only
+        blob = [np.array([len(tokens), case["prompt"], 0], np.int32).tobytes(), np.float32(1.0).tobytes(),
+                np.array([len(keep)], np.int32).tobytes(), np.array(tokens, np.int32).tobytes(),
+                expected.astype("<f4").tobytes()] + [layer.astype("<f4").tobytes() for layer in keep]
+        (OUT / f"tiny-diffusion-gemma.{name}.case").write_bytes(b"".join(blob))
 
 
 def main() -> None:
