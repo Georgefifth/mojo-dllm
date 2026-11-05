@@ -94,7 +94,9 @@ around its generate call.
 
 llama.cpp runs its timestep schedule because its block mode needs the prompt
 length to be a multiple of the block size. The schedules commit tokens in a
-different order, which changes the text but not the cost of a step.
+different order, which changes the text but not, we expect, the cost of a step.
+That is an argument. The measurement that does not depend on the schedule is the
+"forward pass alone" table below, which times one pass at the same token count.
 
 † diffuse-cpp's recommended mode reuses K/V between steps and stops early when
 the canvas has settled. It does less work, so it is not a like-for-like row.
@@ -152,13 +154,20 @@ llama.cpp's `llama-bench` at the same token count).
 - peak RSS comes from `/usr/bin/time`.
 
 The table above is generated from `bench/results/*.json` by
-`scripts/bench_table.py`, and CI fails if the two disagree.
+`scripts/bench_table.py`, and CI fails if a table differs from the evidence file
+it names. Two gaps are open: `--check` passes when a marker or its evidence is
+missing ([#141](https://github.com/vladimirrott/mojo-dllm/issues/141)), and an
+unknown mode exits 0 ([#142](https://github.com/vladimirrott/mojo-dllm/issues/142)).
 
 ## Steps and quality
 
 A diffusion model commits `tokens / steps` tokens per step. The table above
 uses 4 tokens per step, which is fast and shows in the text as repeated or
-dropped words. More steps cost proportionally more time:
+dropped words. More steps cost proportionally more time, so the headline
+tokens / s above is not a quality-matched figure. In the first prompt below,
+the repeated words disappear at 64 steps, which takes about twice the time of
+32 steps, so that prompt's quality-matched speed is about half the headline
+rate. The code prompt shows no such damage at 32 steps.
 
 <!-- quality:start -->
 **LLaDA-8B-Instruct.Q4_K_M.gguf**, 128 generated tokens.
@@ -198,6 +207,24 @@ Discordant counts problems only the baseline solved / only the arm solved. Time 
 
 Evidence: `bench/eval/2026-10-29-baseline-vs-dualcache.json`, `bench/eval/2026-10-29-baseline-vs-threshold09.json`, `bench/eval/2026-10-29-baseline-vs-dualcache-first50.json`, `bench/eval/2026-10-29-baseline-vs-threshold09-first50.json`.
 <!-- eval:end -->
+
+## Limits of this evidence
+
+- One machine: a 13th Gen Intel i5-13420H laptop for the CPU tables, with an
+  RTX 3050 6 GB laptop GPU for the GPU tables. Another CPU, memory speed or
+  GPU can change the ratios.
+- Each row is the median of 3 runs on each of 3 prompts. That is 9 runs, one
+  model file and one quantization (Q4_K_M) per table.
+- The schedules differ between runtimes (see above), so tokens / s compares
+  runtimes at one step count, not at one output quality.
+- Each table names the commit it was measured at in its `Versions` line. They
+  differ, because the evidence was recorded as the work went on; no single
+  commit holds all of it, and the release tag is not one of them.
+- The quality column counts immediate repeated words on two prompts. It is not
+  a perplexity or a task score. The only task evidence is the GSM8K run for
+  `--threshold` and `--dual-cache` on LLaDA.
+- diffuse-cpp loads its own conversion of the model, so its rows are indicative.
+- No binary is published yet ([#105](https://github.com/vladimirrott/mojo-dllm/issues/105)): you build from source.
 
 ## Reading the numbers
 

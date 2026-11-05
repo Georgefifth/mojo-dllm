@@ -21,13 +21,13 @@ machine with a GPU, the GPU tests that CI only builds:
 
 | Step | Command | Fails when |
 |---|---|---|
-| hygiene | `scripts/check_hygiene.sh --tracked` | a credential pattern or the author's employer name appears in tracked text |
+| hygiene | `scripts/check_hygiene.sh --tracked` | a credential pattern or the author's employer name appears in tracked text (files whose names git quotes are skipped, [#140](https://github.com/vladimirrott/mojo-dllm/issues/140)) |
 | format | `uv run --frozen mojo format -q src tests bench`, then `git diff` | `mojo format` changes any file (Mojo has no check mode) |
 | build | `scripts/build.sh` | any compiler warning (`-Werror`) |
 | tests | `scripts/run-tests.sh` | a test fails, a file runs zero tests, or the total differs from `tests/test-count.txt` |
 | launcher tests | `uv run --frozen --only-group test pytest tests/python -q` | a test of the `./mojo-dllm` launcher fails |
 | shellcheck, yamllint, markdownlint | `shellcheck --severity=warning scripts/*.sh .githooks/*`; `uv run --frozen --only-group lint yamllint --strict .github`; `markdownlint-cli2 "*.md" "docs/**/*.md" "#docs/spec.md"` | any of the three reports a finding |
-| claims | `uv run --no-project python scripts/bench_table.py --check` | a table in the README, `docs/benchmarks.md` or `docs/correctness.md` differs from what `bench/results`, `bench/parity`, `bench/quality` and `bench/eval` render |
+| claims | `uv run --no-project python scripts/bench_table.py --check` | a table in the README, `docs/benchmarks.md` or `docs/correctness.md` differs from what `bench/results`, `bench/parity`, `bench/quality` and `bench/eval` render (a missing marker or evidence file passes, [#141](https://github.com/vladimirrott/mojo-dllm/issues/141); an unknown mode exits 0, [#142](https://github.com/vladimirrott/mojo-dllm/issues/142)) |
 | docs | `mdbook build` + `scripts/check_links.py` | a relative link is broken |
 | action pins | `scripts/verify-action-pins.sh` (needs an authenticated `gh`) | a pinned SHA is not the tag its comment names |
 | eval self-test | `uv run --no-project python bench/eval_gsm8k.py --self-test` | answer extraction or the paired statistics break, or `gsm8k-200.jsonl` is not 200 rows with numeric answers |
