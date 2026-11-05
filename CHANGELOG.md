@@ -8,6 +8,10 @@ semantic versioning (0.y: minor bumps may break things).
 
 ### Added
 
+- `scripts/capped.sh` runs a command in its own memory-capped systemd scope: a hard cap, no swap and a
+  whole-scope kill on an OOM, so a job that outgrows the machine dies alone instead of taking its terminal with
+  it. It refuses to start when less memory is available than the job needs or when the user manager cannot
+  enforce limits. `docs/development.md` ("Heavy jobs") explains the settings and what does not isolate a job.
 - The DiffusionGemma reference (issues #66 and #62). `scripts/build_dg_ref.sh`
   builds the ggml-org/llama.cpp#24423 branch at a pinned commit, CPU only and
   offline, into its own tree beside the mainline checkout. `tools/ref/dg_ref.cpp`

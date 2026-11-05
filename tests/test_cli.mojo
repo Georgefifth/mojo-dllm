@@ -1,4 +1,5 @@
 from std.os import remove
+from std.os.path import exists
 from std.testing import assert_equal, assert_true, assert_raises, TestSuite
 
 from cli.args import Args
@@ -22,6 +23,7 @@ from main import (
     _logits_gemma,
     is_top_level_help,
     model_error,
+    version_line,
     stop_json,
     usage,
     usage_for,
@@ -304,6 +306,21 @@ def test_help_exits_zero_and_wins_over_other_problems() raises:
     assert_equal(late.text, usage_for("run"))
     assert_equal(execute(["mojo-dllm", "run", "--help", "--prompt"]), 0)
     assert_equal(execute(["mojo-dllm", "--help"]), 0)
+
+
+def test_version_flag_prints_one_line_and_exits_zero() raises:
+    var d = _decide("--version", [])
+    assert_equal(d.code, 0)
+    assert_true(not d.is_error)
+    assert_true(not d.proceed)
+    assert_equal(d.text, version_line())
+    assert_true(not d.text.__contains__("\n"))
+    assert_true(usage().startswith(version_line() + ": "))
+    assert_equal(execute(["mojo-dllm", "--version"]), 0)
+
+
+def test_usage_mentions_the_version_flag() raises:
+    assert_true(usage().__contains__("mojo-dllm --version"))
 
 
 def test_usage_errors_exit_two() raises:
@@ -849,6 +866,55 @@ def test_logits_refuses_rows_that_are_not_the_canvas() raises:
         _logits_gemma(DG_TINY, 1, tokens, all_rows, path)
     with assert_raises(contains="below the canvas length 16"):
         _logits_gemma(DG_TINY, 1, _gemma_tokens(15), List[Int](), path)
+
+
+def _logits_args(rows: String, path: String, device: String) -> List[String]:
+    return [
+        "mojo-dllm",
+        "logits",
+        "--model",
+        DG_TINY,
+        "--tokens",
+        _csv(_gemma_tokens(25)),
+        "--rows",
+        rows,
+        "--out",
+        path,
+        "--threads",
+        "1",
+        "--device",
+        device,
+    ]
+
+
+def test_the_logits_command_runs_diffusion_gemma_on_the_cpu() raises:
+    var rows = List[Int]()
+    for r in range(9, 25):
+        rows.append(r)
+    var path = String("build/tests/dg-logits-command.f32")
+    assert_equal(execute(_logits_args(_csv(rows), path, "cpu")), 0)
+    var m = DiffusionGemma(DG_TINY, threads=1, max_tokens=25)
+    var want = Floats(16 * 512)
+    m.forward(_gemma_tokens(25), want.ptr())
+    var mm = Mapping(path)
+    var got = F32Ptr(unsafe_from_address=mm.addr)
+    var differ = 0
+    for i in range(16 * 512):
+        if got.unsafe_load(i) != want[i]:
+            differ += 1
+    remove(path)
+    assert_equal(differ, 0)
+
+
+def test_the_logits_command_refuses_the_gpu_for_diffusion_gemma() raises:
+    var rows = List[Int]()
+    for r in range(9, 25):
+        rows.append(r)
+    var path = String("build/tests/dg-logits-command-gpu.f32")
+    if exists(path):
+        remove(path)
+    assert_equal(execute(_logits_args(_csv(rows), path, "gpu")), 1)
+    assert_true(not exists(path))
 
 
 def main() raises:

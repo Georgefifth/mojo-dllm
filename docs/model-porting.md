@@ -76,7 +76,7 @@ except `diffusion.canvas_length` and `tokenizer.ggml.mask_token_id`.
 | `attention.layer_norm_rms_epsilon`, `tokenizer.ggml.mask_token_id` | required | RMSNorm epsilon, mask token |
 | `attention.value_length`, `attention.value_length_swa`, `rope.dimension_count`, `rope.dimension_count_swa` | required, equal to the key length of their kind | other widths are refused |
 | `context_length` | optional, 4096 | stored in config |
-| `final_logit_softcapping` | optional, 0 (off) | a negative value is refused |
+| `final_logit_softcapping` | optional, 30 when absent (llama.cpp's default); 0 turns it off | a negative value is refused |
 | `attention.shared_kv_layers`, `embedding_length_per_layer_input` | optional, 0 | any other value is refused: no forward pass handles it |
 | `attention.causal` | optional, false | true is refused; the canvas attends in both directions |
 
