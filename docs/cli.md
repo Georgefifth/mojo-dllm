@@ -108,6 +108,13 @@ Runs one forward pass over the given token ids and writes f32 logits for the
 requested positions to a file, `[positions, vocab]`, row major. The parity
 tests use it; see [Correctness](correctness.md).
 
+On a `diffusion-gemma` file the tokens are the prompt followed by the canvas,
+whose length the file declares (`diffusion.canvas_length`, 256 in the real
+model). The model scores only the canvas, so `--rows` must list exactly those
+positions, the last canvas-length ones, and the file holds `[canvas, vocab]`.
+The pass is the unified `[prompt | canvas]` one, with no self-conditioning. It
+runs on the CPU only; `--device gpu` is refused.
+
 ## Errors
 
 An error names the thing that is wrong. Usage errors exit with status 2 and

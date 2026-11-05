@@ -109,6 +109,61 @@ D1/D5 retain the same prompt, length and steps and differ only in `eps`.
 L8/D6 use fixed stop ids 347/49 taken from the baseline outputs, never selected
 at runtime. All cases disable threshold and dual-cache acceleration.
 
+## Heavy jobs
+
+A job that holds more memory than the machine can spare makes the kernel's global OOM killer pick a victim.
+With systemd's default `OOMPolicy=stop`, systemd then stops every process in the victim's scope, and a job
+started from a terminal lives in that terminal's scope: the shell, the editor session and every agent in the
+window end with it. A measured run of DiffusionGemma-26B on the CPU peaked at about 25.6 GiB resident, and on a
+30 GiB machine with a 2 GiB swapfile that run ended in exactly this way.
+
+`scripts/capped.sh` starts a command in a scope of its own, under a hard cap, so only that scope can fail:
+
+```bash
+scripts/capped.sh --mem 26G -- build/mojo-dllm run --model model.gguf --prompt "hello"
+```
+
+It sets four things, each for a reason you can check in the documentation of the kernel's cgroup v2 memory
+controller and of systemd's resource control:
+
+| Setting | Effect |
+|---|---|
+| `MemoryMax=26G` | the hard cap (`memory.max`); the kernel OOM killer runs inside the scope when it is reached and kills nothing outside it |
+| `MemorySwapMax=0` | no swap, so a job over its cap dies instead of dragging the desktop through swap |
+| `OOMPolicy=kill` | one OOM kill ends the whole scope (`memory.oom.group`), not half of it |
+| `CPUQuota=N00%` | only with `--cpus N`, so a job leaves cores for the desktop |
+
+It never sets `MemoryHigh`. Below the cap, `MemoryHigh` throttles a process that has nothing to reclaim until it
+stands still (state `D`, no progress); a job that really needs its memory should be killed, not frozen.
+
+The script also refuses to start a job in two cases:
+
+- `/proc/meminfo` reports less `MemAvailable` than `--need` (default: `--mem`). A cap larger than the available
+  memory does not protect the machine, because the global OOM killer still runs. Exit status 75.
+- The systemd user manager cannot enforce a memory limit (no cgroup v2, or the `memory` controller is not
+  delegated to it). It never runs the command uncapped. Exit status 69.
+
+`--dry-run` runs both checks and prints the `systemd-run` command without running it. When a capped job dies with
+exit status 137, the cap was most likely reached; `journalctl -k | grep oom-kill` tells the cases apart:
+`constraint=CONSTRAINT_MEMCG` is the cap working, while `constraint=CONSTRAINT_NONE` with `global_oom` means the
+whole machine ran out of memory.
+
+For a container, set the same two limits on the container: `podman run --memory 12g --memory-swap 12g`
+(`--memory-swap` counts memory plus swap, so equal values mean no swap).
+
+What does not isolate a job on its own:
+
+- `ulimit -v` limits address space, which counts mapped files such as a 16 GB model that is read lazily, and it
+  does not stop a process that stays below the limit but takes the machine's last free page.
+- `systemd-oomd` reacts to memory pressure and swap use over seconds, and a job that fills memory in one
+  allocation burst can reach the kernel's killer first.
+- A swapfile only delays the kill and slows the machine while it lasts.
+
+References: the kernel's [Control Group v2](https://docs.kernel.org/admin-guide/cgroup-v2.html) memory
+interface, systemd's
+[resource control](https://www.freedesktop.org/software/systemd/man/latest/systemd.resource-control.html) and
+[scope units](https://www.freedesktop.org/software/systemd/man/latest/systemd.scope.html) (`OOMPolicy=`).
+
 ## Benchmarks
 
 ```bash
