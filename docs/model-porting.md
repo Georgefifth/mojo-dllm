@@ -59,8 +59,9 @@ decision.
 A `diffusion-gemma` file is read into a `ModelConfig`, and `mojo-dllm inspect`
 prints the result, or the refusal and its key. `DiffusionLM` and the GPU model
 stop on it with `diffusion-gemma does not run on this model`. `DiffusionGemma`
-runs it on the CPU through `logits`; `run` still waits for the tokenizer (#62)
-and the denoiser (#65), so a clean `inspect` does not mean `run` works. The names come from the unmerged
+runs it on the CPU through `logits`, and `tokenize` prints the ids of its chat
+prompt; `run` still waits for the generation loop (#64), so a clean `inspect`
+does not mean `run` works. The names come from the unmerged
 ggml-org/llama.cpp#24423 and appear once each, as the `GEMMA_*` constants at the
 top of `models/transformer.mojo`. Keys carry the `diffusion-gemma.` prefix
 except `diffusion.canvas_length` and `tokenizer.ggml.mask_token_id`.
@@ -154,7 +155,9 @@ input. Shape agreement does not establish matching weights or logits.
 
 If `tokenizer.ggml.pre` is new, add its pre-tokenizer to
 `tokenizer/bpe.mojo` and golden cases to `scripts/gen_tokenizer_fixture.py`.
-llama.cpp's regex for each pre-tokenizer is in `src/llama-vocab.cpp`.
+llama.cpp's regex for each pre-tokenizer is in `src/llama-vocab.cpp`. A model
+whose `tokenizer.ggml.model` is not `gpt2` needs its own module, as `gemma4`
+has in `tokenizer/gemma4.mojo`; `Tokenizer` picks it from that key.
 
 ## 5. Sampler
 

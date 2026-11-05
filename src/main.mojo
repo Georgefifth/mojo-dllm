@@ -36,6 +36,7 @@ from mojo_dllm.models.transformer import (
 )
 from mojo_dllm.sys.mem import Bytes, Floats
 from mojo_dllm.tokenizer.bpe import Tokenizer
+from mojo_dllm.tokenizer.gemma4 import gemma4_chat_prompt
 
 comptime VERSION = "0.1.0"
 
@@ -358,12 +359,16 @@ def peak_rss_bytes() raises -> Int:
     return Int(buf.u8().unsafe_bitcast[Int64]().unsafe_load(4)) * 1024
 
 
-def chat_prompt(arch: String, text: String) -> String:
+def chat_prompt(arch: String, text: String) raises -> String:
     """One user turn in the model's chat template (its tokenizer.chat_template).
 
     LLaDA-8B-Instruct: Llama-3 style headers after <|startoftext|>.
     Dream-v0-Instruct: Qwen2 ChatML with the default system message.
+    DiffusionGemma: `<bos>`, a user turn and an open model turn; the Jinja
+    template in the file is reproduced by `gemma4_chat_prompt`.
     """
+    if arch == "diffusion-gemma":
+        return gemma4_chat_prompt(["user"], [text])
     if arch == "dream":
         return (
             "<|im_start|>system\nYou are a helpful"
@@ -603,10 +608,7 @@ def _run[
             )
         print("load time:", model.load_time(), "s (tokenizer", tok_s, "s)")
     cfg.early_stop = not a.has("no-early-stop")
-    cfg.stop_ids = List[Int]()
-    for s in [tok.eos_id, tok.eot_id]:
-        if s >= 0:
-            cfg.stop_ids.append(s)
+    cfg.stop_ids = tok.eog_ids()
     var is_tty = external_call["isatty", c_int](c_int(1)) != 0
     var printer = CanvasPrinter(
         tok^,
@@ -622,7 +624,7 @@ def _run[
     var gen = List[Int]()
     for i in range(len(prompt), len(res.tokens)):
         var t = res.tokens[i]
-        if t == printer.tok.eos_id or t == printer.tok.eot_id:
+        if printer.tok.is_eog(t):
             break
         gen.append(t)
     var text = printer.tok.decode(gen)
