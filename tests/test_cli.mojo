@@ -2,7 +2,7 @@ from std.os import remove
 from std.os.path import exists
 from std.testing import assert_equal, assert_true, assert_raises, TestSuite
 
-from cli.args import Args
+from cli.args import Args, env_flags
 from mojo_dllm.diffusion.sampler import GenResult
 from mojo_dllm.formats.gguf import GGUFFile
 from mojo_dllm.models.diffusion_gemma import DiffusionGemma
@@ -165,6 +165,22 @@ def test_declared_booleans_come_from_the_single_list() raises:
                 if candidate == flag:
                     found = True
             assert_true(found, command + " declares a boolean not in the list")
+
+
+def test_env_flags_are_value_flags_of_run() raises:
+    # Every name the environment can fill must be a declared value flag of
+    # `run` and must not be a boolean: a boolean takes no value, so an
+    # inserted `--flag value` pair would leave the value as a stray
+    # positional, and `run` refuses stray positionals.
+    var run = command_spec("run")
+    for name in env_flags():
+        var in_values = False
+        for flag in run.values:
+            if flag == name:
+                in_values = True
+        assert_true(in_values, name + " is not a value flag of run")
+        for flag in run.booleans:
+            assert_true(flag != name, name + " is a boolean flag of run")
 
 
 def test_a_flag_of_another_command_is_unknown() raises:
