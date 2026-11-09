@@ -17,11 +17,16 @@ semantic versioning (0.y: minor bumps may break things).
   the diffusion algorithm, the dtype and the batch size come from `GET /server_info` and the checkpoint from
   `GET /model_info`. A declared value that contradicts a reported one is refused, a server that runs no diffusion
   algorithm or reports a quantization is refused, and the batch size must be 1 (reported or declared). The arm's
-  `model` carries the dtype, so `compare --across-weights` sees different weights. `forward_passes` is null in every
+  `model` carries the dtype, so `compare --across-weights` sees different weights, and `flags.model_matches_server` is
+  true only when `--model` is the checkpoint the server reports (false for an alias that matches the served name only).
+  `forward_passes` is null in every
   row: SGLang exposes no per-request step count on `main` or in v0.5.23 (sgl-project/sglang#48675 was open and
   unmerged on 2026-11-09), and the engine never reads `/metrics`. The model-list and completion checks moved from the
-  vLLM engine into `bench/engines/_openai.py`, unchanged, and both engines use them. `docs/benchmarks.md` has the
-  runbook with the cookbook's serve command as read on 2026-11-09, the note that the bf16 checkpoint is 48.1 GiB, and a
+  vLLM engine into `bench/engines/_openai.py`, unchanged, and both engines use them. The shared HTTP client also
+  strips control characters from, and caps, the text of a connection or transport error, as it does for server text.
+  `docs/benchmarks.md` has the runbook with the cookbook's serve command as read on 2026-11-09, the note that the bf16
+  checkpoint is 48.1 GiB, the Vast.ai API key read into `VAST_API_KEY` instead of passed as an argument (a test scans
+  the fenced blocks of the file for a key in an argument list), and a
   DiffusionGemma section that lists the llama.cpp reference, vLLM, SGLang and mojo-dllm rows, each marked
   `no committed run yet`. No server was run and the evaluation on a rented machine has not happened.
 - `bench/engines/vllm.py`, an engine for `bench/eval_engine.py` that answers GSM8K through the OpenAI-compatible
