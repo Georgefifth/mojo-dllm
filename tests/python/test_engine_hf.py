@@ -879,7 +879,7 @@ def test_the_load_guard_refuses_below_the_need_and_never_calls_the_loader(rig: R
 
 
 def test_the_load_guard_passes_at_exactly_the_need(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(hf, "mem_available_gb", lambda machine=None: NEED_LLADA_BF16 + 0.001)
+    monkeypatch.setattr(hf, "mem_available_gb", lambda machine=None: REAL_LOAD_NEED(_hf(), _cfg("GSAI-ML/LLaDA-8B-Instruct")))
     assert rig.run(limit=1) == 0
     assert len(rig.loads) == 1
 
