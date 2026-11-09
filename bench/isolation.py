@@ -1219,15 +1219,22 @@ def add_arguments(parser: Any) -> None:
                         help="repeat a problem whose window was noisy up to this many times (default %(default)s)")
 
 
+_FROM_FILE = object()
+
+
 @contextlib.contextmanager
 def arm_session(args: Any, *, arm: str, device: str, model: str | os.PathLike, runs_dir: pathlib.Path,
                 versions: dict | None = None, log: Callable[[str], None] = lambda m: print(m, flush=True),
-                machine: Machine | None = None) -> Iterator[Arm]:
-    """The runners' wrapper: tune when asked, preflight, yield the Arm, write the closing snapshot."""
+                machine: Machine | None = None, ram_gb: Any = _FROM_FILE) -> Iterator[Arm]:
+    """The runners' wrapper: tune when asked, preflight, yield the Arm, write the closing snapshot.
+
+    The memory the preflight wants is read from the model file unless `ram_gb` is given: an engine that has
+    already loaded its weights (no file to size) passes what it still needs. `None` there means unknown, and
+    the preflight FAILs `memory` as it does for a file it cannot read."""
     try:
         with contextlib.ExitStack() as stack:
             info = stack.enter_context(tuned(machine, log)) if getattr(args, "tune", False) else None
-            started = begin_arm(arm, device=device, need_ram_gb=need_ram_gb(model), runs_dir=runs_dir,
+            started = begin_arm(arm, device=device, need_ram_gb=need_ram_gb(model) if ram_gb is _FROM_FILE else ram_gb, runs_dir=runs_dir,
                                 machine=machine, retries=args.isolation_retries,
                                 allow_noisy=args.allow_noisy, allow_battery=getattr(args, "allow_battery", False),
                                 tuned=info, versions=versions, log=log)
