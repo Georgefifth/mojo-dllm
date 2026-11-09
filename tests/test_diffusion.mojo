@@ -82,6 +82,18 @@ def _tiny_cfg() -> GenConfig:
     return c^
 
 
+def _tiny_dream_cfg() -> GenConfig:
+    # Same shape as `_tiny_cfg` but with Dream's mask id. The refusals this
+    # file pins all raise before `mask_id` is read, so its value only has to
+    # be Dream's for the config to be honest.
+    var c = GenConfig()
+    c.gen_length = 8
+    c.block_length = 4
+    c.steps = 4
+    c.mask_id = 510
+    return c^
+
+
 def test_generation_resolves_every_mask() raises:
     var m = DiffusionLM(FIX + "tiny-llada.gguf", threads=2, max_tokens=16)
     var prompt: List[Int] = [5, 17, 300]
@@ -348,6 +360,136 @@ def test_rejects_bad_block_geometry() raises:
     c.steps = 3
     with assert_raises(contains="multiple of the number of blocks"):
         _ = generate(m, prompt, c)
+
+
+# The eleven refusals below each pin one guard in the sampler. Every config
+# starts from a tiny cfg that generates cleanly, then flips the one field the
+# guard reads, so the assert fails if that guard is removed. #144.
+
+
+def test_llada_rejects_nonpositive_geometry() raises:
+    # sampler.mojo `_generate_llada`: gen_length/block_length/steps must be
+    # positive. The block_length case also guards the `gen_length %
+    # block_length` modulo just below it from dividing by zero.
+    var m = DiffusionLM(FIX + "tiny-llada.gguf", threads=2, max_tokens=16)
+    var prompt: List[Int] = [5]
+    var c = _tiny_cfg()
+    c.gen_length = 0
+    with assert_raises(contains="block length and steps must be positive"):
+        _ = generate(m, prompt, c)
+    c = _tiny_cfg()
+    c.block_length = 0
+    with assert_raises(contains="block length and steps must be positive"):
+        _ = generate(m, prompt, c)
+    c = _tiny_cfg()
+    c.steps = 0
+    with assert_raises(contains="block length and steps must be positive"):
+        _ = generate(m, prompt, c)
+
+
+def test_llada_rejects_dual_cache_with_full_logits() raises:
+    # The K/V cache recomputes only one block, so it cannot report every row's
+    # logits; asking for both is refused rather than silently truncated.
+    var m = DiffusionLM(FIX + "tiny-llada.gguf", threads=2, max_tokens=16)
+    var prompt: List[Int] = [5]
+    var c = _tiny_cfg()
+    c.dual_cache = True
+    c.full_logits = True
+    with assert_raises(contains="cannot give every row's logits"):
+        _ = generate(m, prompt, c)
+
+
+def test_llada_rejects_negative_threshold() raises:
+    var m = DiffusionLM(FIX + "tiny-llada.gguf", threads=2, max_tokens=16)
+    var prompt: List[Int] = [5]
+    var c = _tiny_cfg()
+    c.threshold = -0.5
+    with assert_raises(contains="threshold must not be negative"):
+        _ = generate(m, prompt, c)
+
+
+def test_llada_rejects_threshold_with_random_remasking() raises:
+    # A confidence threshold ranks candidates by confidence; random remasking
+    # has no confidence to rank, so the combination is meaningless.
+    var m = DiffusionLM(FIX + "tiny-llada.gguf", threads=2, max_tokens=16)
+    var prompt: List[Int] = [5]
+    var c = _tiny_cfg()
+    c.threshold = 0.5
+    c.remasking = "random"
+    with assert_raises(contains="needs low_confidence remasking"):
+        _ = generate(m, prompt, c)
+
+
+def test_llada_rejects_unknown_remasking() raises:
+    var m = DiffusionLM(FIX + "tiny-llada.gguf", threads=2, max_tokens=16)
+    var prompt: List[Int] = [5]
+    var c = _tiny_cfg()
+    c.remasking = "bogus"
+    with assert_raises(contains="unknown remasking strategy"):
+        _ = generate(m, prompt, c)
+
+
+def test_dream_rejects_nonpositive_geometry() raises:
+    # sampler.mojo `_generate_dream`: gen_length and steps must be positive.
+    var m = DiffusionLM(FIX + "tiny-dream.gguf", threads=2, max_tokens=16)
+    var prompt: List[Int] = [5]
+    var c = _tiny_dream_cfg()
+    c.gen_length = 0
+    with assert_raises(contains="generation length and steps must be positive"):
+        _ = generate(m, prompt, c)
+    c = _tiny_dream_cfg()
+    c.steps = 0
+    with assert_raises(contains="generation length and steps must be positive"):
+        _ = generate(m, prompt, c)
+
+
+def test_dream_rejects_unknown_algorithm() raises:
+    # Dream maps low_confidence -> entropy, then accepts only its three
+    # algorithms; anything else is refused by name.
+    var m = DiffusionLM(FIX + "tiny-dream.gguf", threads=2, max_tokens=16)
+    var prompt: List[Int] = [5]
+    var c = _tiny_dream_cfg()
+    c.remasking = "bogus"
+    with assert_raises(contains="unknown Dream algorithm"):
+        _ = generate(m, prompt, c)
+
+
+def test_dream_rejects_positive_temperature() raises:
+    var m = DiffusionLM(FIX + "tiny-dream.gguf", threads=2, max_tokens=16)
+    var prompt: List[Int] = [5]
+    var c = _tiny_dream_cfg()
+    c.temperature = 0.7
+    with assert_raises(contains="temperature > 0 is not implemented"):
+        _ = generate(m, prompt, c)
+
+
+def test_dream_rejects_threshold() raises:
+    var m = DiffusionLM(FIX + "tiny-dream.gguf", threads=2, max_tokens=16)
+    var prompt: List[Int] = [5]
+    var c = _tiny_dream_cfg()
+    c.threshold = 0.5
+    with assert_raises(
+        contains="confidence threshold is implemented for LLaDA only"
+    ):
+        _ = generate(m, prompt, c)
+
+
+def test_dream_rejects_dual_cache() raises:
+    var m = DiffusionLM(FIX + "tiny-dream.gguf", threads=2, max_tokens=16)
+    var prompt: List[Int] = [5]
+    var c = _tiny_dream_cfg()
+    c.dual_cache = True
+    with assert_raises(contains="K/V cache is implemented for LLaDA only"):
+        _ = generate(m, prompt, c)
+
+
+def test_dream_rejects_empty_prompt() raises:
+    # The sharpest of the eleven: Dream scores a position from the row before
+    # it, so an empty prompt would index row -1 without this guard.
+    var m = DiffusionLM(FIX + "tiny-dream.gguf", threads=2, max_tokens=16)
+    var prompt: List[Int] = []
+    with assert_raises(contains="at least one prompt token"):
+        _ = generate(m, prompt, _tiny_dream_cfg())
 
 
 def test_dream_confidences() raises:
