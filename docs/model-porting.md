@@ -36,7 +36,7 @@ its own metadata.
 | `<arch>.attention.head_count` | required | query head count |
 | `<arch>.attention.head_count_kv` | optional, head count | KV head count; must divide query head count |
 | `<arch>.feed_forward_length` | required | feed-forward width |
-| `<arch>.context_length` | optional, 4096 | stored in config; currently does not constrain the canvas |
+| `<arch>.context_length` | optional, 4096 | the longest canvas (prompt plus `--max-tokens`) `run` accepts |
 | `<arch>.attention.layer_norm_rms_epsilon` | required | RMSNorm epsilon |
 | `<arch>.rope.freq_base` | optional, 10000 | RoPE frequency base |
 | `<arch>.vocab_size` | optional, rows of `output.weight` | vocabulary size |
@@ -54,9 +54,8 @@ required. `block_count`, `embedding_length`, `head_count`, `head_count_kv`,
 the RoPE base must be finite and above zero; a value outside those ranges
 stops the load with `<key> must be positive, got N` or `<key> must be finite and
 above zero, got X`. Other scaling metadata is not interpreted, and
-`context_length` has no range check. Whether to constrain canvases by
-`context_length` or reject `attention.causal = true` remains a separate policy
-decision.
+`context_length` is not range checked. `run` refuses a canvas longer than it;
+whether to reject `attention.causal = true` remains a separate policy decision.
 
 ### DiffusionGemma metadata
 
@@ -80,7 +79,7 @@ except `diffusion.canvas_length` and `tokenizer.ggml.mask_token_id`.
 | `rope.freq_base`, `rope.freq_base_swa` | required | RoPE base of global and of sliding layers |
 | `attention.layer_norm_rms_epsilon`, `tokenizer.ggml.mask_token_id` | required | RMSNorm epsilon, mask token |
 | `attention.value_length`, `attention.value_length_swa`, `rope.dimension_count`, `rope.dimension_count_swa` | required, equal to the key length of their kind | other widths are refused |
-| `context_length` | optional, 4096 | stored in config |
+| `context_length` | optional, 4096 | stored in config; `run` does not take this architecture yet |
 | `final_logit_softcapping` | optional, 30 when absent (llama.cpp's default); 0 turns it off | a negative value is refused |
 | `attention.shared_kv_layers`, `embedding_length_per_layer_input` | optional, 0 | any other value is refused: no forward pass handles it |
 | `attention.causal` | optional, false | true is refused; the canvas attends in both directions |

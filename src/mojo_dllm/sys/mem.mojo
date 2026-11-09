@@ -37,6 +37,13 @@ def alloc_bytes(n_bytes: Int, zero: Bool = True) raises -> Int:
         raise Error(
             "cannot allocate a negative size: " + String(n_bytes) + " bytes"
         )
+    if n_bytes > Int.MAX - HUGE:
+        # Rounding the size up to the alignment would wrap.
+        raise Error(
+            "cannot allocate "
+            + String(n_bytes)
+            + " bytes: the size is beyond what the allocator can round up"
+        )
     var align = HUGE if n_bytes >= HUGE else ALIGN
     var size = ((max(n_bytes, 1) + align - 1) // align) * align
     var addr = Int(
@@ -98,6 +105,13 @@ struct Floats(Movable):
     var n: Int
 
     def __init__(out self, n: Int) raises:
+        if n > Int.MAX // 4:
+            # n * 4 wraps: 2^62 floats would be asked of the allocator as 0.
+            raise Error(
+                "cannot allocate "
+                + String(n)
+                + " floats: the size in bytes does not fit in an Int"
+            )
         self.n = n
         self.addr = alloc_bytes(n * 4)
 

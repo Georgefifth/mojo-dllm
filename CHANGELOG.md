@@ -174,6 +174,12 @@ semantic versioning (0.y: minor bumps may break things).
 
 ### Changed
 
+- `run` refuses a canvas longer than the file's context length before any weight is mapped (issue #201): the prompt
+  tokens plus `--max-tokens` must not exceed `<arch>.context_length` (4096 when the key is absent). A
+  `--max-tokens` of 2^62 used to wrap the activation sizes and write past a small buffer after the whole model had
+  loaded. `Floats` and `alloc_bytes` also refuse a size that does not fit in an Int, with a named error. No script
+  or document in `bench/`, `scripts/` or `docs/` asks for a canvas near 4096: the largest generation length any of
+  them passes or defaults to is 256.
 - `run` and `logits` check every option that the flags alone decide before the model file is opened (issue #202):
   `--threshold` (finite, 0 to 1), `--prev-temp-inv` (finite, above 0), `--device`, `--path`, `--remasking`, and a
   `--block-length` or `--steps` that does not divide `--max-tokens`. Each exits with status 2 and names the flag.

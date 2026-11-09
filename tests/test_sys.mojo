@@ -41,6 +41,17 @@ def test_impossible_allocation_raises() raises:
         free_bytes(addr)
 
 
+def test_sizes_that_overflow_raise_with_a_name() raises:
+    # n * 4 wraps to 0 for 2^62: the old code returned a 64-byte block for it.
+    with assert_raises(contains="cannot allocate 4611686018427387904 floats"):
+        _ = Floats(1 << 62)
+    with assert_raises(contains="cannot allocate 2305843009213693952 floats"):
+        _ = Floats(Int.MAX // 4 + 1)
+    with assert_raises(contains="cannot allocate 9223372036854775807 bytes"):
+        var addr = alloc_bytes(Int.MAX, zero=False)
+        free_bytes(addr)
+
+
 def test_floats_initialization_roundtrip_and_zero() raises:
     var f = Floats(17)
     for i in range(f.n):

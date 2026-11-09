@@ -21,6 +21,8 @@ from main import (
     execute,
     inspect_text,
     check_tokenizer_matches_model,
+    check_context_length,
+    cmd_run,
     json_str,
     _csv,
     _logits_gemma,
@@ -1270,6 +1272,70 @@ def test_logits_checks_rows_and_prev_before_the_weights_load() raises:
     remove(short)
     with assert_raises(contains="below the canvas length 16"):
         _logits_gemma(bad, 1, _gemma_tokens(15), List[Int](), path)
+
+
+def _run_args(max_tokens: String, extra: List[String]) raises -> Args:
+    var spec = command_spec("run")
+    var argv = List[String](
+        [
+            "mojo-dllm",
+            "run",
+            "--model",
+            "tests/fixtures/gpt2-tiny/with-model.gguf",
+            "--prompt",
+            "ab",
+            "--no-chat",
+            "--threads",
+            "1",
+            "--max-tokens",
+            max_tokens,
+        ]
+    )
+    for x in extra:
+        argv.append(x)
+    return Args(argv, spec.values, spec.booleans)
+
+
+def test_run_refuses_a_canvas_longer_than_the_context_length() raises:
+    # with-model.gguf has no llada.context_length, so the default 4096 holds. One block of 4096 tokens
+    # and one step is the cheapest run that is one token too long once the
+    # prompt is counted.
+    var a = _run_args("4096", ["--block-length", "4096", "--steps", "1"])
+    with assert_raises(
+        contains="exceeds the context length 4096 (llada.context_length)"
+    ):
+        cmd_run(a)
+
+
+def test_run_refuses_a_generation_length_that_overflows_the_allocations() raises:
+    # 2^62 passes the integer checks and the block rule, so only the context
+    # length stands between it and an allocation of 2^62 * hidden floats.
+    var a = _run_args("4611686018427387904", [])
+    with assert_raises(contains="exceeds the context length 4096"):
+        cmd_run(a)
+    var b = _run_args("9223372036854775807", ["--block-length", "1"])
+    with assert_raises(contains="exceeds the context length 4096"):
+        cmd_run(b)
+
+
+def test_the_context_length_bound_is_exact() raises:
+    check_context_length(10, 4086, 4096, "llada")  # 4096 tokens fit
+    with assert_raises(
+        contains=(
+            "prompt 10 + --max-tokens 4087 = 4097 exceeds the context length"
+            " 4096 (llada.context_length)"
+        )
+    ):
+        check_context_length(10, 4087, 4096, "llada")
+    with assert_raises(contains="prompt 5000 + --max-tokens 1 = 5001 exceeds"):
+        check_context_length(5000, 1, 4096, "dream")
+    # The sum wraps for a huge length; the message must not print the wrap.
+    with assert_raises(
+        contains=(
+            "--max-tokens 9223372036854775807 = more than 9223372036854775807"
+        )
+    ):
+        check_context_length(10, Int.MAX, 4096, "llada")
 
 
 def test_the_gemma_only_flags_are_named_for_other_models() raises:

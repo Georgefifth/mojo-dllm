@@ -617,6 +617,36 @@ def check_tokenizer_matches_model(g: GGUFFile, tok: Tokenizer) raises:
         )
 
 
+def check_context_length(
+    prompt_tokens: Int, gen_length: Int, context: Int, arch: String
+) raises:
+    """Refuse a canvas longer than the context length the file declares.
+
+    The canvas is the prompt plus `--max-tokens`. Every activation buffer and
+    the rope table are sized from it, and the angles past the context length
+    are ones the model never trained on. The test is written as a subtraction:
+    `prompt_tokens + gen_length` wraps for a huge `--max-tokens`, and a wrapped
+    sum is how a size of 2^62 once reached the allocator as a small one.
+    """
+    if gen_length > context - prompt_tokens:
+        var total = "more than " + String(Int.MAX)
+        if gen_length <= Int.MAX - prompt_tokens:
+            total = String(prompt_tokens + gen_length)
+        raise Error(
+            "prompt "
+            + String(prompt_tokens)
+            + " + --max-tokens "
+            + String(gen_length)
+            + " = "
+            + total
+            + " exceeds the context length "
+            + String(context)
+            + " ("
+            + arch
+            + ".context_length)"
+        )
+
+
 def cmd_run(a: Args) raises:
     var interval: Int
     try:
@@ -653,6 +683,9 @@ def cmd_run(a: Args) raises:
     var tok = Tokenizer(g)
     check_tokenizer_matches_model(g, tok)
     var prompt = encode_prompt(tok, g.architecture(), a)
+    check_context_length(
+        len(prompt), cfg.gen_length, ModelConfig(g).ctx, g.architecture()
+    )
     _ = g^
     var tok_s = Float64(perf_counter_ns() - t0) / 1e9
     var device = a.get_or("device", "cpu")

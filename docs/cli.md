@@ -29,7 +29,7 @@ stops the run (see [Errors](#errors)).
 |---|---|---|
 | `--model PATH` | required | LLaDA or Dream GGUF file |
 | `--prompt TEXT` | required | the user message |
-| `--max-tokens N` | 128 | tokens to generate (the masked canvas) |
+| `--max-tokens N` | 128 | tokens to generate (the masked canvas). The prompt tokens plus N must not exceed the file's `<arch>.context_length` (4096 when the key is absent); the check runs after the header is read and before any weight is mapped |
 | `--steps N` | `--max-tokens` | denoising steps; a multiple of the block count |
 | `--block-length N` | 32, or `--max-tokens` when that is smaller | LLaDA's semi-autoregressive block size; must divide `--max-tokens`. Dream ignores it |
 | `--temperature T` | 0 | LLaDA: 0 is greedy; above 0 adds Gumbel noise as LLaDA does. Dream supports only 0 and stops with an error above it |
@@ -163,6 +163,7 @@ change nothing; every other error exits with status 1.
 | `ERROR: flag --prompt needs a value` | A value flag is the last argument |
 | `ERROR: flag --steps needs an integer, got 'abc'` | A numeric flag holds text, or a number too large for 64 bits. `--temperature` needs a finite number and `--tokens` and `--rows` need comma-separated integers |
 | `ERROR: flag --steps must be at least 1, got 0` | `--max-tokens`, `--steps`, `--block-length` and `--threads` need at least 1, and `--temperature` at least 0. `--threshold` needs a number from 0 to 1 and `--prev-temp-inv` one above 0. The check runs before the model is mapped |
+| `ERROR: prompt 10 + --max-tokens 4096 = 4106 exceeds the context length 4096 (llada.context_length)` | The canvas is longer than the file's context length. Lower `--max-tokens`. Exit status 1, before any weight is mapped |
 | `ERROR: cannot open model file PATH: No such file or directory` | The path is wrong. The reason is the operating system's. The next line is `to download a model, run: ./mojo-dllm pull` |
 | `ERROR: cannot open model file PATH: Permission denied` | The open failed for a reason other than a missing file, such as `Not a directory`. The operating system names the reason. No download hint follows, because `pull` would not fix it |
 | `ERROR: is a directory: PATH` | The model path names a directory |
