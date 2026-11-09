@@ -10,7 +10,9 @@ usage:
 `run` answers the problems in bench/eval/gsm8k-200.jsonl through the engine and appends one line per problem to
 bench/eval/runs/ARM.jsonl, with the keys `eval_gsm8k.py run` writes, so `eval_gsm8k.py compare` pairs the arm with a
 mojo-dllm arm on the same model file. The prompt, the answer extraction, the PAUSE file, the mains-power wait
-and the resume rule (an arm keeps one configuration) are `eval_gsm8k`'s own.
+and the resume rule (an arm keeps one configuration) are `eval_gsm8k`'s own, and so is the isolation
+(`bench/isolation.py`): a preflight at the start of the arm, ARM.env.json, a window and repeats for a noisy
+problem, `--tune`, `--allow-noisy` and `--isolation-retries`.
 
 A problem is never scored when the engine exits non-zero, prints no timing, or returns no text: the run stops and
 names the problem. Engines are in bench/engines/; `--engine llamacpp --help` lists llama.cpp's options.
@@ -29,7 +31,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "bench"))
 import eval_gsm8k  # noqa: E402  (bench/eval_gsm8k.py)
 import engines  # noqa: E402
-import power  # noqa: E402  (bench/power.py)
+import isolation  # noqa: E402  (bench/isolation.py)
 from engines import EngineError, GenConfig  # noqa: E402
 
 
@@ -54,28 +56,32 @@ def cmd_run(args: argparse.Namespace, extra: list[str]) -> int:
     eval_gsm8k.RUNS.mkdir(parents=True, exist_ok=True)
     out = eval_gsm8k.RUNS / f"{args.arm}.jsonl"
     done = eval_gsm8k.answered(out, args.arm, flags, version, model)
-    for k, p in enumerate(problems):
-        if p["index"] in done:
-            continue
-        eval_gsm8k.wait_if_paused()
-        prompt = eval_gsm8k.PROMPT.format(question=p["question"])
-        try:
-            g, pinfo = power.run_on_mains(lambda: engine.generate(prompt, cfg), allow_battery=args.allow_battery,
-                                          log=lambda m: print(m, flush=True))
-        except EngineError as e:
-            raise SystemExit(f"problem {p['index']}: {args.engine} failed: {e}")
-        if not isinstance(g.get("text"), str) or not g["text"].strip():
-            raise SystemExit(f"problem {p['index']}: {args.engine} returned no text; not scored")
-        pred = eval_gsm8k.extract(g["text"])
-        rec = dict(index=p["index"], gold=p["answer"], pred=pred, correct=pred == eval_gsm8k.canon(p["answer"]),
-                   forward_passes=g["forward_passes"], generate_s=g["generate_s"],
-                   stopped_early=g.get("stopped_early"), text=g["text"], flags=flags, version=version,
-                   model=model, power_retries=pinfo["power_retries"], on_battery=pinfo["on_battery"],
-                   power_source=pinfo["power_source"])
-        with out.open("a") as f:
-            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-        print(f"[{k + 1}/{len(problems)}] #{p['index']} {'ok ' if rec['correct'] else 'BAD'} "
-              f"pred={pred} gold={p['answer']} passes={g['forward_passes']} {g['generate_s']:.1f}s", flush=True)
+    todo = [(k, p) for k, p in enumerate(problems) if p["index"] not in done]
+    if not todo:
+        return 0
+    with isolation.arm_session(args, arm=args.arm, device=args.device, model=args.model, runs_dir=eval_gsm8k.RUNS,
+                               versions={args.engine: version}) as arm:
+        for k, p in todo:
+            eval_gsm8k.wait_if_paused()
+            prompt = eval_gsm8k.PROMPT.format(question=p["question"])
+            try:
+                g, pinfo = arm.run(lambda: engine.generate(prompt, cfg))
+            except EngineError as e:
+                raise SystemExit(f"problem {p['index']}: {args.engine} failed: {e}")
+            if not isinstance(g.get("text"), str) or not g["text"].strip():
+                raise SystemExit(f"problem {p['index']}: {args.engine} returned no text; not scored")
+            pred = eval_gsm8k.extract(g["text"])
+            rec = dict(index=p["index"], gold=p["answer"], pred=pred, correct=pred == eval_gsm8k.canon(p["answer"]),
+                       forward_passes=g["forward_passes"], generate_s=g["generate_s"],
+                       stopped_early=g.get("stopped_early"), text=g["text"], flags=flags, version=version,
+                       model=model, power_retries=pinfo["power_retries"], on_battery=pinfo["on_battery"],
+                       power_source=pinfo["power_source"], isolation=pinfo["isolation"])
+            with out.open("a") as f:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            noisy = "" if pinfo["isolation"]["clean"] else " NOISY: " + "; ".join(pinfo["isolation"]["reasons"])
+            print(f"[{k + 1}/{len(problems)}] #{p['index']} {'ok ' if rec['correct'] else 'BAD'} "
+                  f"pred={pred} gold={p['answer']} passes={g['forward_passes']} {g['generate_s']:.1f}s{noisy}",
+                  flush=True)
     return 0
 
 
@@ -102,6 +108,7 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--timeout-s", type=float, default=DEFAULT_TIMEOUT_S,
                    help="fail the run when one generation takes longer than this (default %(default)s)")
     r.add_argument("--allow-battery", action="store_true", help="answer on battery instead of pausing")
+    isolation.add_arguments(r)
     if name:
         engines.get(name).add_arguments(r)
     args = ap.parse_args(argv)

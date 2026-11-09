@@ -22,6 +22,8 @@ sys.path.insert(0, str(ROOT / "bench"))
 import engines  # noqa: E402
 import eval_engine  # noqa: E402
 import eval_gsm8k  # noqa: E402
+import isolation  # noqa: E402
+import power  # noqa: E402
 import run_bench  # noqa: E402
 from engines import llamacpp  # noqa: E402
 
@@ -137,7 +139,7 @@ def rig(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Rig:
 
 
 RECORD_KEYS = {"index", "gold", "pred", "correct", "forward_passes", "generate_s", "stopped_early", "text",
-               "flags", "version", "model", "power_retries", "on_battery", "power_source"}
+               "flags", "version", "model", "power_retries", "on_battery", "power_source", "isolation"}
 
 
 # registry
@@ -425,7 +427,7 @@ def test_compare_keeps_its_other_keys(rig: Rig) -> None:
     doc = json.loads(next((rig.root / "bench" / "eval").glob("*-a-vs-b.json")).read_text())
     assert set(doc) == {"date", "problems", "arms", "limit", "problems_in_arm", "config", "accuracy", "difference",
                         "ci95", "discordant", "mcnemar_p", "forward_passes_mean", "forward_passes_rows",
-                        "generate_s_mean"}
+                        "generate_s_mean", "generate_s_mean_clean", "clean_rows", "noisy_rows", "unchecked_rows"}
 
 
 def test_compare_accepts_an_engine_arm_next_to_a_mojo_arm(rig: Rig) -> None:
@@ -471,7 +473,7 @@ def test_allow_battery_reaches_run_on_mains_as_given(rig: Rig, monkeypatch: pyte
         seen.append(allow_battery)
         return fn(), {"power_retries": 0, "on_battery": False, "power_source": "mains"}
 
-    monkeypatch.setattr(eval_engine.power, "run_on_mains", stub)
+    monkeypatch.setattr(power, "run_on_mains", stub)
     assert rig.run(limit=1, battery=battery) == 0
     assert seen == [battery]
 
@@ -525,3 +527,69 @@ def test_timeout_default_is_generous_and_recorded_nowhere_in_flags(rig: Rig) -> 
     assert eval_engine.DEFAULT_TIMEOUT_S >= 1800
     assert rig.run(limit=1) == 0
     assert "timeout" not in json.dumps(rig.rows()[0]["flags"])      # a timeout does not change what was measured
+
+
+# isolation: the runner preflights the arm, runs every problem in a window and records it (bench/isolation.py)
+
+
+def test_rows_record_a_clean_window_and_the_arm_writes_its_env_file(rig: Rig) -> None:
+    assert rig.run() == 0
+    for r in rig.rows():
+        assert r["isolation"]["clean"] is True and r["isolation"]["retries"] == 0 and r["isolation"]["reasons"] == []
+    env = json.loads((rig.runs / "arm.env.json").read_text())
+    s = env["sessions"][0]
+    assert s["preflight"]["ok"] is True and s["tool_versions"]["llamacpp"] == rig.rows()[0]["version"]
+    assert "snapshot_start" in s and "snapshot_end" in s and s["device"] == "gpu"
+
+
+def test_a_failed_preflight_stops_before_the_first_problem(rig: Rig, fake_machine) -> None:
+    fake_machine.profile = fake_machine.platform_profile = "balanced"
+    fake_machine.flush()
+    with pytest.raises(SystemExit) as e:
+        rig.run()
+    assert "profile" in str(e.value) and "--tune" in str(e.value)
+    assert rig.rows() == [] and rig.calls() == []
+    assert json.loads((rig.runs / "arm.env.json").read_text())["sessions"][0]["preflight"]["ok"] is False
+
+
+def test_allow_noisy_runs_after_a_failed_preflight_and_records_it(rig: Rig, fake_machine) -> None:
+    fake_machine.profile = fake_machine.platform_profile = "balanced"
+    fake_machine.flush()
+    assert rig.run("--allow-noisy") == 0 and len(rig.rows()) == 2
+    assert json.loads((rig.runs / "arm.env.json").read_text())["sessions"][0]["preflight_failed_allowed"] is True
+
+
+def test_tune_sets_performance_for_the_run_and_restores_it(rig: Rig, fake_machine) -> None:
+    fake_machine.profile = fake_machine.platform_profile = "balanced"
+    fake_machine.flush()
+    assert rig.run("--tune") == 0
+    assert fake_machine.profile == "balanced"
+    sets = [c[2] for c in fake_machine.calls if c[:2] == ["powerprofilesctl", "set"]]
+    assert sets == ["performance", "balanced"]
+    assert json.loads((rig.runs / "arm.env.json").read_text())["sessions"][0]["tuned"]["previous"] == "balanced"
+
+
+def test_a_noisy_window_repeats_the_problem_up_to_the_retry_option(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    class Noisy:
+        def __init__(self, **kw: object) -> None:
+            self.result = {"clean": False, "reasons": ["other-cpu-mean 12.0% > 5%"], "other_cpu_share_max": 0.3}
+
+        def __enter__(self) -> "Noisy":
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            return None
+
+    monkeypatch.setattr(isolation, "Window", Noisy)
+    assert rig.run("--isolation-retries", "1", limit=1) == 0
+    assert len(rig.calls()) == 2                                  # the first answer and one repeat
+    r = rig.rows()[0]
+    assert r["isolation"]["clean"] is False and r["isolation"]["retries"] == 1 and r["isolation"]["noisy"] is True
+    assert r["isolation"]["reasons"] == ["other-cpu-mean 12.0% > 5%"] and r["text"]      # kept and still scored
+
+
+def test_a_resumed_arm_does_not_preflight_when_nothing_is_left(rig: Rig, fake_machine) -> None:
+    assert rig.run() == 0
+    calls_before = len(fake_machine.calls)
+    assert rig.run() == 0
+    assert len(rig.rows()) == 2 and len(fake_machine.calls) == calls_before
