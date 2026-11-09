@@ -23,6 +23,7 @@ from main import (
     check_tokenizer_matches_model,
     check_context_length,
     cmd_run,
+    cmd_tokenize,
     json_str,
     _csv,
     _logits_gemma,
@@ -73,7 +74,42 @@ def test_chat_templates_strip_user_text() raises:
     )
     assert_equal(chat_prompt("llada", " \thi\n"), llada)
     assert_equal(chat_prompt("dream", " \thi\n"), dream)
-    assert_equal(chat_prompt("unknown", "hi"), llada)
+
+
+def test_chat_prompt_refuses_an_architecture_without_a_template() raises:
+    # `chat_prompt` fell through to the LLaDA header template for every
+    # architecture except Dream, so the ids belonged to text the model never saw.
+    with assert_raises(
+        contains=(
+            "no chat template for architecture 'qwen2' (llada, dream and"
+            " diffusion-gemma have one); pass --no-chat"
+        )
+    ):
+        _ = chat_prompt("qwen2", "hi")
+    with assert_raises(contains="architecture '?'"):
+        _ = chat_prompt("?", "hi")
+
+
+def test_tokenize_refuses_a_chat_prompt_for_another_architecture() raises:
+    var spec = command_spec("tokenize")
+    var path = "tests/fixtures/gpt2-tiny/other-arch.gguf"
+    var chat = Args(
+        ["x", "tokenize", "--model", path, "--prompt", "ab"],
+        spec.values,
+        spec.booleans,
+    )
+    with assert_raises(contains="no chat template for architecture 'qwen2'"):
+        cmd_tokenize(chat)
+    # The text as it is still tokenizes: --no-chat asks for no template.
+    var plain = Args(
+        ["x", "tokenize", "--model", path, "--prompt", "ab", "--no-chat"],
+        spec.values,
+        spec.booleans,
+    )
+    cmd_tokenize(plain)
+    assert_equal(
+        execute(["mojo-dllm", "tokenize", "--model", path, "--prompt", "ab"]), 1
+    )
 
 
 def test_chat_template_for_diffusion_gemma() raises:

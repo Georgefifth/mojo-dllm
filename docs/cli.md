@@ -105,6 +105,10 @@ model. Useful to compare against `llama-tokenize`. For a `diffusion-gemma` file
 the prompt is the file's chat template: `<bos>`, a user turn and an open model
 turn, which gives one BOS token (id 2). It reads the tokenizer arrays of the
 file and none of its weights, so it runs on a file too big to load.
+Only `llada`, `dream` and `diffusion-gemma` files have a chat template here: for another
+architecture the command stops with `no chat template for architecture 'qwen2' (llada, dream
+and diffusion-gemma have one); pass --no-chat to tokenize the text as it is`, and `--no-chat`
+tokenizes the text unchanged. `run` applies the same rule to its prompt.
 
 ## `inspect`
 

@@ -1158,8 +1158,9 @@ def gpt2_tiny() -> None:
     base_tokens = ["a", "b", "<pad>", "<unk>", "<eos>", "ab"]
     base_types = [1, 1, 3, 2, 3, 1]
 
-    def write(name, *, tokens=base_tokens, types=base_types, pre="qwen2", ids=None, add_bos=None, model_vocab=None):
-        w = GGUFWriter(str(OUT / "gpt2-tiny" / name), "llada")
+    def write(name, *, tokens=base_tokens, types=base_types, pre="qwen2", ids=None, add_bos=None, model_vocab=None,
+              arch="llada"):
+        w = GGUFWriter(str(OUT / "gpt2-tiny" / name), arch)
         w.add_string("tokenizer.ggml.model", "gpt2")
         w.add_string("tokenizer.ggml.pre", pre)
         w.add_array("tokenizer.ggml.tokens", list(tokens))
@@ -1199,6 +1200,7 @@ def gpt2_tiny() -> None:
     write("no-eos.gguf", ids={"eos": None})
     write("add-bos-without-id.gguf", add_bos=True)
     write("with-model.gguf", model_vocab=6)
+    write("other-arch.gguf", arch="qwen2")  # a tokenizer of an architecture with no chat template here (#207)
     write("with-model-vocab-512.gguf", model_vocab=512)
 
 

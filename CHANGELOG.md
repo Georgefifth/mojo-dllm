@@ -174,6 +174,10 @@ semantic versioning (0.y: minor bumps may break things).
 
 ### Changed
 
+- `tokenize` and `run` refuse a chat prompt for an architecture other than `llada`, `dream` and `diffusion-gemma`
+  (issue #207). `chat_prompt` fell through to the LLaDA header template for every other architecture, so
+  `tokenize --model qwen2.gguf --prompt hi` printed the ids of text that model never saw and exited with status 0. The
+  error names the architecture and suggests `--no-chat`, which still tokenizes the text unchanged.
 - `--threads` reaches every parallel CPU loop (issue #206): `quantize_acts` and the weight repack ran on every core
   whatever the setting, so a `--threads 1` timing included all-core work. Both now use `parallel_for` with the worker
   count, and the model, DiffusionGemma and MoE paths pass it; each token and each 8-row group is independent, so the

@@ -484,6 +484,8 @@ def chat_prompt(arch: String, text: String) raises -> String:
     Dream-v0-Instruct: Qwen2 ChatML with the default system message.
     DiffusionGemma: `<bos>`, a user turn and an open model turn; the Jinja
     template in the file is reproduced by `gemma4_chat_prompt`.
+    Any other architecture has no template here: a guessed one would give ids
+    for text the model never saw.
     """
     if arch == "diffusion-gemma":
         return gemma4_chat_prompt(["user"], [text])
@@ -494,10 +496,17 @@ def chat_prompt(arch: String, text: String) raises -> String:
             + String(text.strip())
             + "<|im_end|>\n<|im_start|>assistant\n"
         )
-    return (
-        "<|startoftext|><|start_header_id|>user<|end_header_id|>\n\n"
-        + String(text.strip())
-        + "<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+    if arch == "llada":
+        return (
+            "<|startoftext|><|start_header_id|>user<|end_header_id|>\n\n"
+            + String(text.strip())
+            + "<|eot_id|><|start_header_id|>assistant<|end_header_id|>\n\n"
+        )
+    raise Error(
+        "no chat template for architecture '"
+        + arch
+        + "' (llada, dream and diffusion-gemma have one); pass --no-chat to"
+        " tokenize the text as it is"
     )
 
 
