@@ -28,7 +28,8 @@ import eval_engine  # noqa: E402
 import eval_gsm8k  # noqa: E402
 from engines import hf  # noqa: E402
 
-REAL_RAM_GB = hf.HF.ram_gb_after_load
+REAL_LOAD_NEED = hf.HF.load_need_gb
+REAL_AFTER_LOAD = hf.HF.ram_gb_after_load
 SHA = "05334cb9faaf763692dcf9d8737c642be2b2a6ae"
 ANSWER = "The answer is 18."
 RECORD_KEYS = {"index", "gold", "pred", "correct", "forward_passes", "generate_s", "stopped_early", "text",
@@ -228,8 +229,8 @@ def rig(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Rig:
 
     monkeypatch.setattr(hf, "load_model", load_model)
     monkeypatch.setattr(hf, "package_version", lambda name: VERSIONS[name])
-    # the preflight reads a fake 12 GB machine; the figure itself is pinned by the test_ram_* tests
-    monkeypatch.setattr(hf.HF, "ram_gb_after_load", lambda self, cfg: 1.0)
+    # a machine with plenty of memory for the load guard; the guard itself is pinned by the test_ram_* tests
+    monkeypatch.setattr(hf, "mem_available_gb", lambda machine=None: 100.0)
     return Rig(repo=repo, runs=runs, root=tmp_path, dream=dream, loads=loads, toks=toks)
 
 
@@ -761,6 +762,8 @@ def test_a_pinned_run_does_not_say_unpinned(rig: Rig) -> None:
 def test_a_local_directory_needs_no_revision_and_is_recorded_as_unverified(rig: Rig, tmp_path: Path) -> None:
     d = tmp_path / "LLaDA-local"
     d.mkdir()
+    with (d / "model.safetensors").open("wb") as f:
+        f.truncate(1_000_000_000)
     assert rig.run("--hf-model", str(d), revision=None) == 0
     v = json.loads(rig.rows()[0]["version"])
     assert v["model_source"] == "local" and v["model_dir"] == str(d) and v["model_revision"] is None
@@ -828,13 +831,13 @@ def _cfg(model: str) -> engines.GenConfig:
     return engines.GenConfig(model=model)
 
 
-def test_ram_bf16_is_one_quarter_over_the_weights_plus_three_gb() -> None:
-    assert REAL_RAM_GB(_hf(), _cfg("GSAI-ML/LLaDA-8B-Instruct")) == pytest.approx(14.93 * GIB * 1.25 + 3, abs=0.01)
-    assert REAL_RAM_GB(_hf(), _cfg("Dream-org/Dream-v0-Instruct-7B")) == pytest.approx(14.19 * GIB * 1.25 + 3, abs=0.01)
+def test_load_need_bf16_is_one_quarter_over_the_weights_plus_three_gb() -> None:
+    assert REAL_LOAD_NEED(_hf(), _cfg("GSAI-ML/LLaDA-8B-Instruct")) == pytest.approx(14.93 * GIB * 1.25 + 3, abs=0.01)
+    assert REAL_LOAD_NEED(_hf(), _cfg("Dream-org/Dream-v0-Instruct-7B")) == pytest.approx(14.19 * GIB * 1.25 + 3, abs=0.01)
 
 
 def test_ram_4bit_is_the_weights_over_three_and_a_half_plus_three_gb() -> None:
-    assert REAL_RAM_GB(_hf(quant="4bit"), _cfg("GSAI-ML/LLaDA-8B-Instruct")) == pytest.approx(14.93 * GIB / 3.5 + 3, abs=0.01)
+    assert REAL_LOAD_NEED(_hf(quant="4bit"), _cfg("GSAI-ML/LLaDA-8B-Instruct")) == pytest.approx(14.93 * GIB / 3.5 + 3, abs=0.01)
 
 
 def test_ram_of_a_local_directory_sums_its_safetensors(tmp_path: Path) -> None:
@@ -842,19 +845,64 @@ def test_ram_of_a_local_directory_sums_its_safetensors(tmp_path: Path) -> None:
         with (tmp_path / f"model-{i}.safetensors").open("wb") as f:
             f.truncate(1_000_000_000)
     (tmp_path / "other.bin").write_bytes(b"x" * 5000)
-    assert REAL_RAM_GB(_hf(hf_model=str(tmp_path)), _cfg("m")) == pytest.approx(2.0 * 1.25 + 3, abs=0.001)
+    assert REAL_LOAD_NEED(_hf(hf_model=str(tmp_path)), _cfg("m")) == pytest.approx(2.0 * 1.25 + 3, abs=0.001)
 
 
 def test_ram_fails_closed_for_an_unknown_repository_and_a_directory_without_weights(tmp_path: Path) -> None:
-    assert REAL_RAM_GB(_hf(), _cfg("someone/LLaDA-custom")) is None
-    assert REAL_RAM_GB(_hf(hf_model=str(tmp_path)), _cfg("m")) is None
+    assert REAL_LOAD_NEED(_hf(), _cfg("someone/LLaDA-custom")) is None
+    assert REAL_LOAD_NEED(_hf(hf_model=str(tmp_path)), _cfg("m")) is None
 
 
-def test_an_unknown_model_size_fails_the_preflight_memory_check(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(hf.HF, "ram_gb_after_load", REAL_RAM_GB)
+def test_the_figure_asked_after_the_load_is_the_working_memory_only() -> None:
+    assert REAL_AFTER_LOAD(_hf(), _cfg("GSAI-ML/LLaDA-8B-Instruct")) == 3.0
+    assert REAL_AFTER_LOAD(_hf(quant="4bit"), _cfg("Dream-org/Dream-v0-Instruct-7B")) == 3.0
+    assert REAL_AFTER_LOAD(_hf(), _cfg("someone/LLaDA-custom")) is None
+
+
+def test_an_unknown_model_size_is_refused_before_the_loader_runs(rig: Rig) -> None:
     with pytest.raises(SystemExit) as e:
         rig.run("--llada-repo", str(rig.repo), family="someone/LLaDA-custom", llada_repo=False)
-    assert "memory" in str(e.value) and rig.rows() == []
+    assert "memory" in str(e.value) and "size" in str(e.value)
+    assert rig.loads == [] and rig.rows() == []
+
+
+NEED_LLADA_BF16 = 14.93 * GIB * 1.25 + 3
+
+
+def test_the_load_guard_refuses_below_the_need_and_never_calls_the_loader(rig: Rig,
+                                                                         monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(hf, "mem_available_gb", lambda machine=None: NEED_LLADA_BF16 - 0.5)
+    with pytest.raises(SystemExit) as e:
+        rig.run()
+    assert "MemAvailable" in str(e.value) and "before loading" in str(e.value)
+    assert rig.loads == [] and rig.rows() == []
+
+
+def test_the_load_guard_passes_at_exactly_the_need(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(hf, "mem_available_gb", lambda machine=None: NEED_LLADA_BF16 + 0.001)
+    assert rig.run(limit=1) == 0
+    assert len(rig.loads) == 1
+
+
+def test_the_4bit_load_guard_uses_the_smaller_need(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(VERSIONS, "bitsandbytes", "0.43.1")
+    monkeypatch.setattr(hf, "mem_available_gb", lambda machine=None: 8.0)      # 4-bit needs about 7.6, bf16 23
+    assert rig.run(limit=1, quant="4bit") == 0
+
+
+def test_an_unreadable_meminfo_refuses_the_load(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(hf, "mem_available_gb", lambda machine=None: None)
+    with pytest.raises(SystemExit) as e:
+        rig.run()
+    assert "cannot read MemAvailable" in str(e.value) and rig.loads == []
+
+
+def test_mem_available_reads_the_machine_meminfo_in_gb(tmp_path: Path) -> None:
+    import isolation
+
+    (tmp_path / "meminfo").write_text("MemTotal: 33000000 kB\nMemAvailable: 10485760 kB\nSwapTotal: 0 kB\nSwapFree: 0 kB\n")
+    assert hf.mem_available_gb(isolation.Machine(proc=tmp_path)) == pytest.approx(10485760 * 1024 / 1e9)
+    assert hf.mem_available_gb(isolation.Machine(proc=tmp_path / "absent")) is None
 
 
 def test_arm_session_sizes_from_the_file_unless_the_engine_gives_the_figure(tmp_path: Path,
