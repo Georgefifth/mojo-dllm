@@ -411,6 +411,183 @@ and has to stay quiet for the timed benchmark runs. Whether 4-bit LLaDA fits 6 G
 is the CPU step time. There are no Transformers rows in this document until the arm is committed under
 `bench/eval/`.
 
+### A running vLLM server (DiffusionGemma)
+
+`bench/eval_engine.py run --engine vllm` answers the same 200 problems through the OpenAI-compatible endpoint of a vLLM
+server that is already running. vLLM serves one diffusion model, DiffusionGemma (issue #179). The engine is a client:
+it never starts or stops a server, loads no weights and installs nothing. Rent the GPU, start the server there,
+point the client at it, and destroy the instance after. The shared client is `bench/engines/_http.py` (standard
+library only); the SGLang engine will reuse it.
+
+What the client sends: `POST /v1/chat/completions` with one user message holding the prompt text every engine uses,
+`temperature` 0 and `max_tokens` equal to `--gen-length`. The server applies the model's chat template. The client
+sends no credentials and no cookies, follows no redirects, never retries, ignores `http_proxy` and its siblings unless
+you pass `--use-env-proxy`, refuses a response over 4 MiB, and gives each request one deadline (`--timeout-s`).
+
+**This arm runs different weights.** The recipe's FP8 checkpoint is not the Q4_K_M GGUF of the llama.cpp arm. The
+server does not report its quantization, so `--quantization` is required and goes into the arm's `model` (for example
+`diffusiongemma-26B-A4B-it|fp8-dynamic`). `eval_gsm8k.py compare` then refuses the pair unless you pass
+`--across-weights`, and an accuracy or speed difference includes the quantization.
+
+**What a row records.** `version` is JSON with the release `GET /version` reports (`{"version": ...}`), and the
+checkpoint, quantization and attention backend. Only the release comes from the server. `--quantization` and
+`--attention-backend` are declared, and `flags.declared_not_verified` lists them. `--checkpoint` is compared with the
+`root` that `GET /v1/models` reports for the served name, and a difference is refused; with no `--checkpoint`, the
+reported `root` is the checkpoint. The chat template is the server's: `flags.chat_template` says
+`applied_by: server`, `verified: false`, and keeps what you declare with `--chat-template`. The run is refused
+before the first problem when the server does not list `--served-model`, when `/version` answers no version, and
+for an HTTP error, an empty completion, a response that names another model, or a response without token counts.
+The server's address is in neither `version` nor `flags`.
+
+**Steps.** The response carries no denoising steps. vLLM's source defines the counter
+`vllm:diffusion_num_denoising_steps_total` for diffusion models (`vllm/v1/spec_decode/metrics.py`, read 2026-11-09). It
+is server-wide. At batch size 1 with this client as the only user, its change across one request is that request's
+step count, and the engine reads it before and after each generation. When `/metrics` or the counter is missing,
+`forward_passes` is null and `flags.forward_passes_measured` is false; the engine never fills in a number. A counter
+that does not move across a request stops the run. **I have not checked this counter against a running server**, so
+read the first rows' `forward_passes` against the model card's 48 steps per canvas before trusting the column.
+`--steps`, `--block-length` and `--schedule` do not reach the server: the step rule is set when the server starts
+(`--diffusion-config`), and a `--steps` different from `--gen-length` is refused.
+
+**The isolation checks see the client only.** `bench/isolation.py` runs on the machine that runs the client. It does
+not observe the server's GPU, clocks, power or neighbours, so a clean preflight says nothing about the rented card.
+Every row says `"server": "remote"` in `flags`. `--device cpu|gpu` selects which local checks apply; run the client
+with `--device cpu` on a machine without a GPU. `generate_s` is the wall time of one request, which includes the
+network round trip and the server's queue.
+
+#### Runbook: rent, serve, run, pull, destroy
+
+**TODO for the maintainer: the budget.** The issue asks for the price and the hours in a pull request before any
+renting. They are not in this document. Name the card, the hourly price from the offer you pick, the hours and the
+total cost in the pull request that adds the arm.
+
+**Which card.** The recipe lists FP8 as verified on H100, H200 and DGX Spark GB10, with a 32 GB minimum
+(`recipes/models/Google/diffusiongemma-26B-A4B-it.yaml` in vllm-project/recipes, read 2026-11-09), and vLLM 0.24.0 or
+newer. An RTX A6000 is not a verified target. The FP8-dynamic checkpoint is 25.33 GiB (Hugging Face API, 2026-11-09).
+
+1. **One time on your machine.** Install the Vast.ai CLI, store your API key and create a throwaway SSH key. The key
+   prompt reads without echo; cancel with Ctrl-C and nothing is written.
+
+   ```bash
+   uv tool install vastai
+   ssh-keygen -t ed25519 -N '' -C vast-dgemma-throwaway -f ~/.ssh/vast_dgemma
+   echo "== Vast.ai API key (console.vast.ai, Account, API Keys) =="
+   read -rs -p "key: " K; echo; vastai set api-key "$K"; unset K
+   vastai create ssh-key "$(cat ~/.ssh/vast_dgemma.pub)"
+   ```
+
+   This touches `~/.config/vastai`, `~/.ssh/vast_dgemma*` and your account's key list. To undo it, delete those
+   paths and remove both keys in the Vast.ai console. I have not run `vastai create ssh-key` here; check it with
+   `vastai create ssh-key --help`.
+
+2. **Find an offer.** Filter by card, reliability, disk, download speed and driver. The field names come from the
+   Vast.ai CLI reference (`docs.vast.ai/cli/reference/search-offers`); fill in the card name from its listing.
+
+   ```bash
+   vastai search offers 'gpu_name=<CARD> num_gpus=1 reliability>0.98 disk_space>=100 inet_down>500 rented=False' -o 'dph'
+   ```
+
+   Pick by the total, not the hourly price: the hourly price times your hours, plus the download (`inet_down_cost`
+   per GB for about 26 GB of weights and the image). Add `--raw` to see the cost fields.
+
+3. **Rent it.** The recipe's image is `vllm/vllm-openai:gemma`. Billing starts when the instance runs.
+
+   ```bash
+   vastai create instance OFFER_ID --image vllm/vllm-openai:gemma --disk 100 --ssh --direct --label dgemma-vllm
+   vastai show instances          # wait for "running"; note the instance ID
+   vastai ssh-url INSTANCE_ID     # prints ssh://root@HOST:PORT
+   ```
+
+   `--disk 100` is my estimate (25.33 GiB of weights, the image and the cache), not a measurement. I have not run
+   these lines on Vast.ai, and I do not know whether its `--ssh` mode keeps the image's `vllm` entry point out of
+   the way. Run `vastai create instance --help` first; if the server starts by itself, read the instance's logs
+   before you start a second one.
+
+4. **Serve.** On the instance (`ssh -p PORT -i ~/.ssh/vast_dgemma root@HOST`), start the server with the command from
+   the recipe page. The page `https://recipes.vllm.ai/Google/diffusiongemma-26B-A4B-it` was read on 2026-11-09. It
+   prints this `vllm serve` command for its default configuration, verbatim:
+
+   ```
+   vllm serve google/diffusiongemma-26B-A4B-it \
+     --max-num-seqs 4 \
+     --tensor-parallel-size 1 \
+     --enable-auto-tool-choice \
+     --tool-call-parser gemma4 \
+     --chat-template examples/tool_chat_template_gemma4.jinja \
+     --reasoning-parser gemma4
+   ```
+
+   and this `docker run` for "Single GPU (H100/H200, BF16)", verbatim:
+
+   ```
+   docker run -itd --name diffusiongemma \
+       --ipc=host --network host --gpus all \
+       -v ~/.cache/huggingface:/root/.cache/huggingface \
+       vllm/vllm-openai:gemma \
+           --model google/diffusiongemma-26B-A4B-it \
+           --max-model-len 262144 \
+           --max-num-seqs 4 \
+           --gpu-memory-utilization 0.85 \
+           --host 0.0.0.0 --port 8000
+   ```
+
+   The page prints no command for the FP8 checkpoint. Its deployment-notes table also lists
+   `--generation-config vllm` (the checkpoint's `generation_config.json` sets `max_tokens` 256 and would override the
+   per-request limit), `--gpu-memory-utilization 0.85` and `--diffusion-config '{"canvas_length": 256}'` as flags
+   DiffusionGemma needs, and neither command above has them all. Which exact command to run for this arm is the
+   maintainer's decision. The FP8 recipe variant names the model `RedHatAI/diffusiongemma-26B-A4B-it-FP8-dynamic`;
+   using that id in place of `google/diffusiongemma-26B-A4B-it` is my substitution, not the page's, and is not
+   verified on hardware. Write the command you ran, as run, into the pull request. Without Docker on the instance
+   (Vast.ai runs the image as the container), take the arguments after the image name and run them as
+   `vllm serve MODEL ...`. If you pass `--served-model-name`, give that name to `--served-model` below.
+   Bind the server to `127.0.0.1` when you can: the tunnel in step 5 reaches it, and the Vast.ai host and port do
+   not need to be open.
+
+5. **Run the arm from your machine.** Open the tunnel in a second terminal, check that the server answers, then run.
+   Results are written on your machine, to `bench/eval/runs/ARM.jsonl`, so nothing needs pulling off the instance.
+   The client holds no key, and the instance never receives one.
+
+   ```bash
+   ssh -N -L 8000:127.0.0.1:8000 -p PORT -i ~/.ssh/vast_dgemma root@HOST      # terminal 2; Ctrl-C closes it
+   curl -s http://127.0.0.1:8000/version                                      # {"version":"0.24.0"} or newer
+   curl -s http://127.0.0.1:8000/v1/models                                    # note the id and root
+   python3 bench/eval_engine.py run --engine vllm --model google/diffusiongemma-26B-A4B-it \
+       --arm vllm-dgemma-fp8 --device cpu --gen-length 256 \
+       --base-url http://127.0.0.1:8000 --served-model SERVED_NAME \
+       --quantization fp8-dynamic --checkpoint CHECKPOINT_AS_SERVED --attention-backend ATTENTION_BACKEND_AS_SERVED
+   ```
+
+   Add `--limit 3` first to look at the rows. Run one client at a time: the step counter is server-wide. After the
+   run, `ss -ltnp 'sport = :8000'` must show no tunnel of yours.
+
+6. **Compare.** `python3 bench/eval_gsm8k.py compare MOJO_OR_LLAMACPP_ARM vllm-dgemma-fp8 --across-weights`.
+
+7. **Destroy the instance.** A stopped instance keeps billing for its disk.
+
+   ```bash
+   vastai destroy instance INSTANCE_ID
+   vastai show instances          # must list nothing
+   ```
+
+   Then read the billing page in the console: the final charge should be within the total you computed in step 2.
+   Delete the throwaway SSH key from the account, and remove `~/.ssh/vast_dgemma*`.
+
+| Symptom | Likely cause | Action |
+|---|---|---|
+| the run refuses with `the server reports the models ...` | `--served-model` differs from `--served-model-name` | pass the id `/v1/models` lists |
+| `--checkpoint is ... but the server reports root ...` | the label does not match what was served | fix the label, or the command |
+| `forward_passes` is null | the server exposes no `vllm:diffusion_num_denoising_steps_total` | none: the column stays null |
+| the run stops on a counter that did not move | another client, or `/metrics` is not this model's | stop other clients; read `/metrics` by hand |
+| `answered HTTP 4xx` | for example `max_tokens` over the server's limit | the message is the server's own |
+| out of memory on the server | `--max-num-seqs` above 4 | the recipe sets 4 because diffusion state buffers are large |
+
+**Not done yet.** No server was run for this engine: the tests use a fake server on 127.0.0.1, and no vLLM, GPU or
+weights were involved. The fields above were read from vLLM's source and the recipe page, not observed on a live
+server (`/version`, `/v1/models`, `/metrics`, the counter's per-request meaning). The evaluation (issue #179, scope
+item 6: batch size 1, the same 200 problems, a 256-token canvas, on a rented card) has not run, so there are no vLLM
+rows in this document. If the harness's number differs from vLLM's published figures by more than 25 percent on the
+same card class, explain it here (prompt length, canvas, checkpoint) when the arm lands.
+
 ## Limits of this evidence
 
 - One machine: a 13th Gen Intel i5-13420H laptop for the CPU tables, with an
