@@ -428,11 +428,31 @@ def test_a_model_label_that_is_neither_the_model_path_nor_the_served_name_is_ref
     assert rig.server.state.posts() == [] and rig.rows() == []
 
 
-def test_a_model_label_equal_to_the_served_name_is_accepted(rig: Rig) -> None:
+def test_a_model_label_equal_to_the_served_name_is_accepted_and_flagged_as_an_alias(rig: Rig) -> None:
     rig.server.state.models = [{"id": "dgemma", "root": "dgemma", "object": "model"}]
     assert rig.run(limit=1, model="dgemma") == 0
     assert rig.rows()[0]["model"] == "dgemma|bfloat16"
+    assert rig.rows()[0]["flags"]["model_matches_server"] is False       # the checkpoint is CHECKPOINT, not "dgemma"
     assert json.loads(rig.server.state.posts()[0]["body"])["model"] == "dgemma"
+
+
+def test_an_alias_label_does_not_claim_to_match_the_checkpoint_the_server_reports(rig: Rig) -> None:
+    # the review's probe: a server started with --served-model-name myalias, and `--model myalias --served-model myalias`
+    rig.server.state.models = [{"id": "myalias", "root": "myalias", "object": "model"}]
+    rig.server.state.model_info = {"model_path": CHECKPOINT, "served_model_name": "myalias"}
+    e = rig.engine(served_model="myalias")
+    cfg = rig.cfg(model="myalias")
+    e.check(cfg)
+    f = e.flags(cfg)
+    assert e.model_name(cfg) == "myalias|bfloat16"
+    assert f["model_matches_server"] is False
+    assert f["checkpoint_reported_by_server"] == CHECKPOINT
+    assert json.loads(e.version())["checkpoint"] == CHECKPOINT
+
+
+def test_the_flag_is_true_only_when_the_label_is_the_reported_checkpoint(rig: Rig) -> None:
+    e, cfg = rig.ready()
+    assert cfg.model == CHECKPOINT and e.flags(cfg)["model_matches_server"] is True
 
 
 def test_a_served_name_given_with_served_model_is_the_one_requested(rig: Rig) -> None:

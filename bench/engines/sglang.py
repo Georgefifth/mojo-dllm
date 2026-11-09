@@ -171,7 +171,9 @@ class SGLang:
                               f"{served!r} the server reports: the arm would be labelled with weights it did not run "
                               "(pass the checkpoint you served as --model)")
         self._model_path = clean(path) if path is not None else None
-        self._label_matches = True if path is not None else None
+        # True only when the label IS the checkpoint the server reports; a label that is just the served name (an alias
+        # for other weights) is accepted and recorded as False. Without a reported model_path nothing can confirm it.
+        self._label_matches = (cfg.model == path) if path is not None else None
         self._checkpoint = self._settle("checkpoint", "--checkpoint", self.checkpoint, path, declared_only, required=False)
 
         version = sinfo.get("version")

@@ -670,7 +670,9 @@ algorithm, the checkpoint and the dtype.
 A value the server reports is the value. A declared value that differs from a reported one is refused, and a declared
 value the server could not confirm is listed in `flags.declared_not_verified`. `--model` must equal the reported
 `model_path` or the served name (SGLang's `/v1/models` puts the served name in both `id` and `root`, so unlike vLLM
-`root` cannot confirm the checkpoint); `flags.model_matches_server` records it. The server's own text is never
+`root` cannot confirm the checkpoint). `flags.model_matches_server` is true when `--model` is the reported `model_path`,
+false when it matches only the served name (an alias, so the label may name other weights than the checkpoint recorded
+in `flags.checkpoint_reported_by_server`), and null when the server reports no `model_path`. The server's own text is never
 copied beyond these named fields: `/server_info` also holds a `launch_command` and the scheduler's internal state, and
 neither reaches an arm file. `flags.algorithm_config_set` says whether the server was started with a
 `--dllm-algorithm-config` file (its content is not readable from the client). The server's address is in neither
