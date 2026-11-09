@@ -213,6 +213,18 @@ semantic versioning (0.y: minor bumps may break things).
   infinite, naming the key. A zero block count used to load a model with no
   layers, a zero KV head count one with no KV width, and a negative head count
   a negative head dimension (#199).
+- `inspect` and `run --verbose` list each metadata key that the file lacks and
+  the reader replaced by a default, as `llada.rope.freq_base = 10000 (default,
+  key absent)`: the KV head count, the context length, the rope base and the
+  logit shift for LLaDA and Dream, and the context length and the final logit
+  softcap for DiffusionGemma. A converter that drops `rope.freq_base` no longer
+  runs on a value nobody sees. The defaults match llama.cpp's except two, which
+  stay as they were: llama.cpp requires `context_length`, where this reader
+  assumes 4096 and never enforces it, and its diffusion example reads a missing
+  `diffusion.shift_logits` as true for every architecture, where this reader
+  takes false for LLaDA and true for Dream. `inspect` of a LLaDA or Dream file
+  also prints `config: refused:` with the reason when its metadata is invalid
+  (#204).
 - Model configuration rejects incompatible RoPE widths/scaling and attention
   key lengths, and unsupported-architecture errors list LLaDA and Dream.
 - Matrix load errors name the tensor and distinguish an unsupported type from

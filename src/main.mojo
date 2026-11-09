@@ -583,6 +583,7 @@ def _run[
             "(" + model.config().arch + ")",
         )
         print("device:", device_line)
+        print(_defaults_text(model.config(), ""), end="")
         print(
             "prompt tokens:",
             len(prompt),
@@ -744,6 +745,28 @@ def _csv(xs: List[Int]) -> String:
     return s
 
 
+def _defaults_text(c: ModelConfig, indent: String) -> String:
+    """The metadata keys the file lacks and the reader replaced by a default,
+    one per line under a heading; empty when there are none."""
+    if c.defaults.byte_length() == 0:
+        return ""
+    var text = indent + "defaults (key absent from the file):\n"
+    for line in c.defaults.split("\n"):
+        if line.byte_length() > 0:
+            text += indent + "  " + String(line) + "\n"
+    return text
+
+
+def _dense_config_text(g: GGUFFile) -> String:
+    """What `inspect` adds for a llada or dream file: the keys that took a
+    default, or the reason the config is refused. Empty when the file sets every
+    key."""
+    try:
+        return _defaults_text(ModelConfig(g), "")
+    except e:
+        return "config: refused: " + String(e) + "\n"
+
+
 def _gemma_config_text(g: GGUFFile) -> String:
     """The `config:` block of `inspect` for a diffusion-gemma file: what the
     reader took from it, or the reason it refuses the file. `inspect` lists a
@@ -816,7 +839,7 @@ def _gemma_config_text(g: GGUFFile) -> String:
         text += "  final logit softcap: " + String(c.softcap) + "\n"
         text += "  canvas length: " + String(c.canvas) + "\n"
         text += "  context length: " + String(c.ctx) + "\n"
-        return text
+        return text + _defaults_text(c, "  ")
     except e:
         return "config: refused: " + String(e) + "\n"
 
@@ -831,8 +854,13 @@ def inspect_text(path: String) raises -> String:
     text += "name: " + g.get_str_or("general.name", "?") + "\n"
     text += "tensors: " + String(g.n_tensors()) + "\n"
     text += "metadata keys: " + String(len(g.kvs)) + "\n"
-    if g.get_str_or("general.architecture", "?") == GEMMA_ARCH:
+    var arch = g.get_str_or("general.architecture", "?")
+    if arch == GEMMA_ARCH:
         text += "\n" + _gemma_config_text(g)
+    elif arch == "llada" or arch == "dream":
+        var block = _dense_config_text(g)
+        if block.byte_length() > 0:
+            text += "\n" + block
     text += "\nmetadata:\n"
     for i in range(len(g.kvs)):
         text += "  " + g.kvs[i].key + " = " + g.value_str(i) + "\n"

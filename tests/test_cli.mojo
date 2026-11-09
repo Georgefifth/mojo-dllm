@@ -790,6 +790,69 @@ def test_inspect_prints_no_config_for_the_other_architectures() raises:
     assert_true("config:" not in text)
 
 
+def _lines_with(text: String, *needles: String) -> List[String]:
+    """The lines of `text` that hold every needle."""
+    var out = List[String]()
+    for line in text.split("\n"):
+        var all_there = True
+        for n in needles:
+            if n not in line:
+                all_there = False
+        if all_there:
+            out.append(String(line))
+    return out^
+
+
+def test_inspect_lists_every_key_that_took_a_default() raises:
+    var text = inspect_text("tests/fixtures/metadata/defaults.gguf")
+    assert_true("\ndefaults (key absent from the file):\n" in text)
+    assert_true(
+        "  llada.attention.head_count_kv = 4 (default, key absent)\n" in text
+    )
+    assert_true("  llada.context_length = 4096 (default, key absent)\n" in text)
+    assert_true(
+        "  llada.rope.freq_base = 10000 (default, key absent)\n" in text
+    )
+    assert_true(
+        "  diffusion.shift_logits = false (default, key absent)\n" in text
+    )
+
+
+def test_inspect_lists_no_default_for_a_key_the_file_sets() raises:
+    var set_all = inspect_text("tests/fixtures/metadata/keys-set.gguf")
+    assert_true("default" not in set_all)
+    assert_equal(len(_lines_with(set_all, "rope.freq_base")), 1)
+    # tiny-llada sets the rope base and the context length but not the rest.
+    var tiny = inspect_text("tests/fixtures/tiny-llada.gguf")
+    assert_equal(len(_lines_with(tiny, "rope.freq_base", "default")), 0)
+    assert_equal(len(_lines_with(tiny, "context_length", "default")), 0)
+    assert_equal(len(_lines_with(tiny, "head_count_kv", "default")), 1)
+
+
+def test_inspect_lists_the_defaults_of_a_diffusion_gemma_file() raises:
+    var text = inspect_text("tests/fixtures/diffusion-gemma/ones.gguf")
+    assert_true("  defaults (key absent from the file):\n" in text)
+    assert_true(
+        "    diffusion-gemma.context_length = 4096 (default, key absent)\n"
+        in text
+    )
+    assert_true(
+        "    diffusion-gemma.final_logit_softcapping = 30 (default, key"
+        " absent)\n"
+        in text
+    )
+    var full = inspect_text("tests/fixtures/tiny-diffusion-gemma.gguf")
+    assert_true("default" not in full)
+
+
+def test_inspect_says_why_a_llada_config_is_refused() raises:
+    var text = inspect_text("tests/fixtures/metadata/kv-heads.gguf")
+    assert_true(
+        "\nconfig: refused: query heads are not a multiple of KV heads\n"
+        in text
+    )
+
+
 def test_inspect_rejects_a_second_path() raises:
     assert_equal(
         _check("inspect", ["a", "b"]),

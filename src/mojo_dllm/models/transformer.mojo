@@ -92,6 +92,19 @@ comptime GEMMA_EXPERTS_UP = "ffn_gate_up_exps.weight"
 comptime GEMMA_EXPERTS_DOWN = "ffn_down_exps.weight"
 
 
+# What a missing key becomes. llama.cpp (commit 5f490d7) has the same default for
+# the rope base (src/llama-model.cpp:1577), for the KV head count (line 1565) and
+# for the final logit softcap, 30 (src/llama-hparams.h:152). It has no default for
+# the context length (src/llama-model.cpp:1475 requires the key), and its diffusion
+# example reads a missing `diffusion.shift_logits` as true for every architecture
+# (examples/diffusion/diffusion-cli.cpp:186). Here the architecture decides that
+# one (see `ModelConfig.__init__`). The reader lists each of these that the
+# file left out, in `ModelConfig.defaults`.
+comptime DEFAULT_CONTEXT = 4096
+comptime DEFAULT_ROPE_BASE: Float32 = 10000.0
+comptime DEFAULT_SOFTCAP: Float32 = 30.0
+
+
 @fieldwise_init
 struct ModelConfig(Copyable, ImplicitlyCopyable, Movable):
     """The hyperparameters of a GGUF model.
@@ -132,6 +145,10 @@ struct ModelConfig(Copyable, ImplicitlyCopyable, Movable):
     """`final_logit_softcapping`: logits become softcap * tanh(logit / softcap); 0 is off. A missing key means 30, llama.cpp's default."""
     var canvas: Int
     """`diffusion.canvas_length`: the tokens the model denoises after the prompt."""
+    var defaults: String
+    """One line for each metadata key the file lacks and the reader replaced by a
+    default, as `KEY = VALUE (default, key absent)`, each ending in a newline;
+    empty when the file set every such key. `inspect` and `run --verbose` print it."""
 
     def __init__(out self, g: GGUFFile) raises:
         var arch = g.architecture()
@@ -157,6 +174,7 @@ struct ModelConfig(Copyable, ImplicitlyCopyable, Movable):
         self.expert_ffn = 0
         self.softcap = 0.0
         self.canvas = 0
+        var defaults = String("")
         var a = self.arch + "."
         self.n_layers = _positive(g, a + "block_count")
         self.hidden = _positive(g, a + "embedding_length")
@@ -165,15 +183,22 @@ struct ModelConfig(Copyable, ImplicitlyCopyable, Movable):
         self.n_kv_heads = self.n_heads
         if g.has_key(kv_key):
             self.n_kv_heads = _positive(g, kv_key)
+        else:
+            defaults += _default_line(kv_key, String(self.n_heads))
         self.head_dim = self.hidden // self.n_heads
         self.ffn = _positive(g, a + "feed_forward_length")
-        self.ctx = g.get_int_or(a + "context_length", 4096)
+        var ctx_key = a + "context_length"
+        self.ctx = g.get_int_or(ctx_key, DEFAULT_CONTEXT)
+        if not g.has_key(ctx_key):
+            defaults += _default_line(ctx_key, String(DEFAULT_CONTEXT))
         var eps_key = a + "attention.layer_norm_rms_epsilon"
         self.eps = g.get_f32(eps_key)
         _check_finite_positive(eps_key, self.eps)
         var theta_key = a + "rope.freq_base"
-        self.theta = g.get_f32_or(theta_key, 10000.0)
+        self.theta = g.get_f32_or(theta_key, DEFAULT_ROPE_BASE)
         _check_finite_positive(theta_key, self.theta)
+        if not g.has_key(theta_key):
+            defaults += _default_line(theta_key, _number_text(self.theta))
         self.mask_id = g.get_int("tokenizer.ggml.mask_token_id")
         var vocab_source = a + "vocab_size"
         if g.has_key(vocab_source):
@@ -191,6 +216,11 @@ struct ModelConfig(Copyable, ImplicitlyCopyable, Movable):
         self.shift_logits = self.arch == "dream"
         if g.has_key("diffusion.shift_logits"):
             self.shift_logits = g.get_bool("diffusion.shift_logits")
+        else:
+            defaults += _default_line(
+                "diffusion.shift_logits",
+                "true" if self.shift_logits else "false",
+            )
         if self.head_dim * self.n_heads != self.hidden:
             raise Error("hidden size is not divisible by the head count")
         if self.n_heads % self.n_kv_heads != 0:
@@ -231,6 +261,7 @@ struct ModelConfig(Copyable, ImplicitlyCopyable, Movable):
         _check_embedding_and_output_shapes(
             g, self.hidden, self.vocab, a + "embedding_length", vocab_source
         )
+        self.defaults = defaults^
 
     def kv_dim(self) -> Int:
         """Width of K or V when every layer has the same shape (LLaDA, Dream).
@@ -267,6 +298,18 @@ struct ModelConfig(Copyable, ImplicitlyCopyable, Movable):
                 + " does not run on this model: `logits` runs it on the CPU,"
                 " and `run` waits for the generation loop (#64)"
             )
+
+
+def _default_line(key: String, value: String) -> String:
+    return key + " = " + value + " (default, key absent)\n"
+
+
+def _number_text(v: Float32) -> String:
+    """A default as a short number: 10000, not 10000.0."""
+    var whole = Int(v)
+    if Float32(whole) == v:
+        return String(whole)
+    return String(v)
 
 
 def _positive(g: GGUFFile, key: String) raises -> Int:
@@ -500,13 +543,20 @@ def _read_diffusion_gemma(g: GGUFFile) raises -> ModelConfig:
             + GEMMA_CAUSAL
             + " is true: only the bidirectional canvas is implemented"
         )
-    var softcap = g.get_f32_or(a + GEMMA_SOFTCAP, 30.0)
+    var defaults = String("")
+    var softcap_key = a + GEMMA_SOFTCAP
+    var softcap = g.get_f32_or(softcap_key, DEFAULT_SOFTCAP)
+    if not g.has_key(softcap_key):
+        defaults += _default_line(softcap_key, _number_text(softcap))
     if softcap < 0.0:
         raise Error(
             a + GEMMA_SOFTCAP + " must not be negative, got " + String(softcap)
         )
 
-    var ctx = g.get_int_or(a + GEMMA_CONTEXT_LENGTH, 4096)
+    var ctx_key = a + GEMMA_CONTEXT_LENGTH
+    var ctx = g.get_int_or(ctx_key, DEFAULT_CONTEXT)
+    if not g.has_key(ctx_key):
+        defaults += _default_line(ctx_key, String(DEFAULT_CONTEXT))
     var eps = g.get_f32(a + GEMMA_EPSILON)
     var theta = g.get_f32(a + GEMMA_ROPE_BASE)
     var theta_swa = g.get_f32(a + GEMMA_ROPE_BASE_SWA)
@@ -542,6 +592,7 @@ def _read_diffusion_gemma(g: GGUFFile) raises -> ModelConfig:
         expert_ffn=expert_ffn,
         softcap=softcap,
         canvas=canvas,
+        defaults=defaults,
     )
     _check_diffusion_gemma_tensors(g, c)
     return c

@@ -102,6 +102,14 @@ shape. It needs no supported architecture, so it works on any GGUF file. For
 `diffusion-gemma` it also prints a `config:` block with what the reader took
 from the file (layer kinds, K/V heads and head size per kind, experts, canvas
 length), or `config: refused:` and the reason, such as the key that is wrong.
+For `llada`, `dream` and `diffusion-gemma` it also lists each metadata key that
+the file lacks and the reader replaced by a default, one per line under
+`defaults (key absent from the file):`, as `llada.rope.freq_base = 10000
+(default, key absent)`. A file that sets every such key prints no such block.
+`run --verbose` prints the same block after the device line. The keys are the
+KV head count, the context length, the rope base and the logit shift for LLaDA
+and Dream, and the context length and the final logit softcap for
+DiffusionGemma.
 
 ## `logits`
 

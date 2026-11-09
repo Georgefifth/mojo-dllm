@@ -537,6 +537,8 @@ def metadata_cases() -> None:
                 w.add_string(key, value)
             elif isinstance(value, float):
                 w.add_float32(key, value)
+            elif isinstance(value, bool):
+                w.add_bool(key, value)
             elif value < 0:
                 w.add_int32(key, value)
             else:
@@ -557,6 +559,9 @@ def metadata_cases() -> None:
     write("rope-width-type", {"llada.rope.dimension_count": "128"})
     write("rope-factor-type", {"llada.rope.scaling.factor": "1.0"})
     write("defaults")
+    # Every optional key that has a default is set, so `inspect` lists none (#204).
+    write("keys-set", {"llada.attention.head_count_kv": 4, "llada.context_length": 4096,
+                       "llada.rope.freq_base": 500000.0, "diffusion.shift_logits": False})
     # Hyperparameters that are zero, negative or not finite (#199), one file per key, named as the
     # DiffusionGemma ones are.
     for key in ("llada.block_count", "llada.embedding_length", "llada.attention.head_count",
