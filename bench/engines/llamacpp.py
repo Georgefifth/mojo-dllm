@@ -23,7 +23,16 @@ import run_bench  # noqa: E402  (bench/run_bench.py: the CUDA check and the outp
 
 EPS = "0.001"     # the timestep schedule's epsilon, as in run_bench
 TEMP = "0"
+SHORT_TIMEOUT_S = 60    # git rev-parse and `mojo-dllm tokenize`: both finish in well under a second
 SEED = "42"
+
+
+def _run(cmd: list[str], timeout_s: float) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=timeout_s)
+    except subprocess.TimeoutExpired:
+        what = " ".join([pathlib.Path(cmd[0]).name] + [w for w in cmd[1:3] if not w.startswith(("-", "/"))])
+        raise EngineError(f"`{what}` timed out after {timeout_s:g} s") from None
 
 
 def binary(llama_cpp: pathlib.Path, device: str) -> pathlib.Path:
@@ -50,8 +59,7 @@ class LlamaCpp:
                                  "--block-length, which GSM8K prompts are not")
 
     def version(self) -> str:
-        p = subprocess.run(["git", "-C", str(self.llama_cpp), "rev-parse", "--short", "HEAD"],
-                           capture_output=True, text=True)
+        p = _run(["git", "-C", str(self.llama_cpp), "rev-parse", "--short", "HEAD"], SHORT_TIMEOUT_S)
         if p.returncode != 0 or not p.stdout.strip():
             raise EngineError(f"cannot read the llama.cpp commit of {self.llama_cpp}: {p.stderr.strip() or 'no output'}")
         return p.stdout.strip()
@@ -76,8 +84,7 @@ class LlamaCpp:
 
     def prompt_tokens(self, prompt: str, cfg: GenConfig) -> int:
         """Tokens llama.cpp will see: the same chat-templated prompt mojo-dllm tokenizes, as run_bench counts them."""
-        p = subprocess.run([str(self.mojo_dllm), "tokenize", "--model", cfg.model, "--prompt", prompt],
-                           capture_output=True, text=True)
+        p = _run([str(self.mojo_dllm), "tokenize", "--model", cfg.model, "--prompt", prompt], SHORT_TIMEOUT_S)
         lines = p.stdout.strip().splitlines()
         if p.returncode != 0 or not lines:
             raise EngineError(f"`mojo-dllm tokenize` failed (exit {p.returncode}): {p.stderr[-300:]}")
@@ -94,8 +101,12 @@ class LlamaCpp:
         return cmd + list(cfg.extra)
 
     def generate(self, prompt: str, cfg: GenConfig) -> dict:
+        # Assumption, not a check: the canvas is sized from mojo-dllm's token count (chat template included, as
+        # run_bench does). llama-diffusion-cli prints its own input token count only when the input is too long
+        # (diffusion-cli.cpp, "input too long"), so a one-token disagreement, a BOS for example, cannot be
+        # detected here. It would make llama.cpp generate one token fewer than --gen-length.
         seq_len = self.prompt_tokens(prompt, cfg) + cfg.gen_length
-        p = subprocess.run(self.command(prompt, cfg, seq_len), capture_output=True, text=True, errors="replace")
+        p = _run(self.command(prompt, cfg, seq_len), cfg.timeout_s)
         output = p.stderr + p.stdout
         if p.returncode != 0:
             raise EngineError(f"llama-diffusion-cli exited {p.returncode}: {output[-400:]}")

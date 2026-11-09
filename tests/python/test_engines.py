@@ -45,11 +45,12 @@ if [ "$gpu" = 1 ]; then
     done
 fi
 echo "diffusion_params: - steps                     u32              = 4" >&2
+if [ "$mode" = sleep ]; then exec sleep 30; fi
 if [ "$mode" = notiming ]; then
     echo "The answer is 7." >&2
     exit 0
 fi
-echo "total time: 12345.6ms, time per step: 48.2ms" >&2
+echo "total time: 12345.6ms, time per step: 48.2ms, sampling time per step: 19.21ms" >&2
 if [ "$mode" != empty ]; then
     printf '\n%s\n' "${FAKE_ANSWER:-The answer is 18.}" >&2
 fi
@@ -63,6 +64,7 @@ exit 0
 
 FAKE_MOJO = r"""#!/usr/bin/env bash
 # A stand-in for `mojo-dllm tokenize`: five token ids on the last line.
+if [ -n "${FAKE_MOJO_SLEEP:-}" ]; then exec sleep "$FAKE_MOJO_SLEEP"; fi
 printf 'loading\n[1,2,3,4,5]\n'
 """
 
@@ -91,10 +93,14 @@ def _first_problems(n: int) -> list[dict]:
 
 class Rig(SimpleNamespace):
     def run(self, *extra: str, arm: str = "arm", model: Path | None = None, limit: int = 2,
-            device: str = "gpu") -> int:
+            device: str = "gpu", steps: str | None = "4", battery: bool = True) -> int:
         argv = ["run", "--engine", "llamacpp", "--model", str(model or self.model), "--arm", arm,
-                "--device", device, "--gen-length", "16", "--steps", "4", "--limit", str(limit),
-                "--allow-battery", "--llama-cpp", str(self.llama), "--mojo-dllm", str(self.mojo)]
+                "--device", device, "--gen-length", "16", "--limit", str(limit),
+                "--llama-cpp", str(self.llama), "--mojo-dllm", str(self.mojo)]
+        if steps is not None:
+            argv += ["--steps", steps]
+        if battery:
+            argv.append("--allow-battery")
         return eval_engine.main(argv + list(extra))
 
     def rows(self, arm: str = "arm") -> list[dict]:
@@ -300,6 +306,14 @@ def test_cuda_layer_error_cases() -> None:
     assert "did not put every layer" in run_bench.cuda_layer_error("no device lines at all")
 
 
+def test_parse_llama_output_drops_the_rest_of_the_timing_line() -> None:
+    # the real line: llama.cpp appends a third field after "time per step"
+    out = ("\ntotal time: 17338.78ms, time per step: 135.46ms, sampling time per step: 19.21ms\n"
+           "The answer is 18.\nllama_perf_context_print: tail\n")
+    got = run_bench.parse_llama_output(out)
+    assert got == {"total_s": 17.33878, "ms_per_step": 135.46, "text": "The answer is 18."}
+
+
 def test_parse_llama_output_keeps_the_whole_text() -> None:
     long = "x" * 900
     out = (f"0.01.487.312 D load_tensors: noise\ntotal time: 2000.0ms, time per step: 20.0ms\n"
@@ -369,7 +383,7 @@ def test_pause_file_holds_the_next_problem(rig: Rig, monkeypatch: pytest.MonkeyP
         sleeps.append(s)
         (rig.runs / "PAUSE").unlink()
 
-    monkeypatch.setattr(eval_gsm8k.time, "sleep", fake_sleep)
+    monkeypatch.setattr(eval_gsm8k, "time", SimpleNamespace(sleep=fake_sleep))   # not the global time.sleep
     assert rig.run(limit=1) == 0
     assert sleeps == [10] and len(rig.rows()) == 1
 
@@ -436,3 +450,78 @@ def test_fake_scripts_pass_bash_n(tmp_path: Path) -> None:
         assert subprocess.run(["bash", "-n", str(path)]).returncode == 0
     assert not re.search(r"\\x[0-9a-f]{2}", FAKE_LLAMA + FAKE_MOJO), "generate scripts from heredocs, not escapes"
     assert os.access(str(ROOT / "bench" / "eval_engine.py"), os.R_OK)
+
+
+# defaults, power, version, timeouts, token count
+
+
+def test_steps_default_to_the_generation_length(rig: Rig) -> None:
+    assert rig.run(steps=None, limit=1) == 0
+    argv = rig.calls()[0]
+    assert argv[argv.index("--diffusion-steps") + 1] == "16"
+    assert rig.rows()[0]["flags"]["diffusion_steps"] == 16 and rig.rows()[0]["forward_passes"] == 16
+
+
+@pytest.mark.parametrize("battery", [True, False])
+def test_allow_battery_reaches_run_on_mains_as_given(rig: Rig, monkeypatch: pytest.MonkeyPatch,
+                                                      battery: bool) -> None:
+    seen: list[bool] = []
+
+    def stub(fn, *, allow_battery, log):
+        seen.append(allow_battery)
+        return fn(), {"power_retries": 0, "on_battery": False, "power_source": "mains"}
+
+    monkeypatch.setattr(eval_engine.power, "run_on_mains", stub)
+    assert rig.run(limit=1, battery=battery) == 0
+    assert seen == [battery]
+
+
+def test_failing_git_does_not_record_an_empty_or_partial_version(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    shim = rig.root / "shim"
+    _script(shim / "git", "#!/usr/bin/env bash\necho deadbee\necho 'fatal: broken' >&2\nexit 128\n")
+    monkeypatch.setenv("PATH", f"{shim}{os.pathsep}{os.environ['PATH']}")
+    with pytest.raises(SystemExit) as e:
+        rig.run()
+    assert "llama.cpp commit" in str(e.value)
+    assert rig.rows() == [] and rig.calls() == []
+
+
+def test_not_a_git_tree_is_refused(rig: Rig) -> None:
+    subprocess.run(["rm", "-rf", str(rig.llama / ".git")], check=True)
+    with pytest.raises(SystemExit) as e:
+        rig.run()
+    assert "llama.cpp commit" in str(e.value)
+
+
+def test_generate_timeout_names_the_problem_and_stores_nothing(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FAKE_MODE", "sleep")
+    with pytest.raises(SystemExit) as e:
+        rig.run("--timeout-s", "1")
+    msg = str(e.value)
+    assert f"problem {_first_problems(1)[0]['index']}" in msg and "timed out after 1" in msg
+    assert rig.rows() == []
+
+
+def test_tokenize_timeout_is_a_failure(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(llamacpp, "SHORT_TIMEOUT_S", 1)
+    monkeypatch.setenv("FAKE_MOJO_SLEEP", "30")
+    with pytest.raises(SystemExit) as e:
+        rig.run()
+    assert "tokenize" in str(e.value) and "timed out" in str(e.value)
+    assert rig.rows() == [] and rig.calls() == []
+
+
+def test_git_timeout_is_a_failure(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    shim = rig.root / "shim"
+    _script(shim / "git", "#!/usr/bin/env bash\nexec sleep 30\n")
+    monkeypatch.setenv("PATH", f"{shim}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setattr(llamacpp, "SHORT_TIMEOUT_S", 1)
+    with pytest.raises(SystemExit) as e:
+        rig.run()
+    assert "timed out" in str(e.value)
+
+
+def test_timeout_default_is_generous_and_recorded_nowhere_in_flags(rig: Rig) -> None:
+    assert eval_engine.DEFAULT_TIMEOUT_S >= 1800
+    assert rig.run(limit=1) == 0
+    assert "timeout" not in json.dumps(rig.rows()[0]["flags"])      # a timeout does not change what was measured

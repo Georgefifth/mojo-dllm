@@ -33,13 +33,16 @@ import power  # noqa: E402  (bench/power.py)
 from engines import EngineError, GenConfig  # noqa: E402
 
 
+DEFAULT_TIMEOUT_S = 1800.0     # a 256-step LLaDA problem takes about 1 to 2 minutes on the GPU, CPU about 25
+
+
 def cmd_run(args: argparse.Namespace, extra: list[str]) -> int:
     problems = [json.loads(l) for l in eval_gsm8k.DATA.read_text().splitlines()]
     if args.limit:
         problems = problems[: args.limit]
     cfg = GenConfig(model=args.model, device=args.device, gen_length=args.gen_length,
                     steps=args.steps or args.gen_length, block_length=args.block_length,
-                    schedule=getattr(args, "schedule", "timestep"), extra=tuple(extra))
+                    schedule=getattr(args, "schedule", "timestep"), extra=tuple(extra), timeout_s=args.timeout_s)
     engine = engines.get(args.engine)(args)
     try:
         engine.check(cfg)
@@ -96,6 +99,8 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--block-length", type=int, default=32)
     r.add_argument("--steps", type=int, default=0)
     r.add_argument("--limit", type=int, default=0)
+    r.add_argument("--timeout-s", type=float, default=DEFAULT_TIMEOUT_S,
+                   help="fail the run when one generation takes longer than this (default %(default)s)")
     r.add_argument("--allow-battery", action="store_true", help="answer on battery instead of pausing")
     if name:
         engines.get(name).add_arguments(r)

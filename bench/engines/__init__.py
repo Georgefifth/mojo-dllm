@@ -30,6 +30,7 @@ class GenConfig:
     block_length: int = 32
     schedule: str = "timestep"
     extra: tuple[str, ...] = field(default_factory=tuple)
+    timeout_s: float = 1800.0      # per generation; a timeout fails the run, it never scores a row
 
 
 @runtime_checkable

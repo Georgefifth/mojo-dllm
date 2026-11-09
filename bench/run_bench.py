@@ -170,7 +170,9 @@ def parse_llama_output(output: str) -> dict | None:
     llama_perf/teardown lines are dropped, and so are the timestamped log lines that -v (CUDA runs) adds,
     such as "0.01.487.312 D load_tensors: ...".
     """
-    m = re.search(r"total time: ([0-9.]+)ms, time per step: ([0-9.]+)ms", output)
+    # newer llama.cpp appends ", sampling time per step: Zms" to the line; it is not text
+    m = re.search(r"total time: ([0-9.]+)ms, time per step: ([0-9.]+)ms(?:, sampling time per step: [0-9.]+ms)?",
+                  output)
     if not m:
         return None
     text = "\n".join(
