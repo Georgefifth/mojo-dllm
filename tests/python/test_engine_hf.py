@@ -28,6 +28,7 @@ import eval_engine  # noqa: E402
 import eval_gsm8k  # noqa: E402
 from engines import hf  # noqa: E402
 
+REAL_RAM_GB = hf.HF.ram_gb_after_load
 SHA = "05334cb9faaf763692dcf9d8737c642be2b2a6ae"
 ANSWER = "The answer is 18."
 RECORD_KEYS = {"index", "gold", "pred", "correct", "forward_passes", "generate_s", "stopped_early", "text",
@@ -89,7 +90,12 @@ class Tok:
     padding_side = "right"
     eos_token = "<|endoftext|>"
 
+    def __init__(self) -> None:
+        self.template_kw: list[dict] = []
+        self.decode_kw: list[dict] = []
+
     def apply_chat_template(self, messages, **kw):
+        self.template_kw.append(kw)
         assert messages[0]["role"] == "user" and "Solve the problem" in messages[0]["content"]
         if kw.get("tokenize") is False:
             return "<chat>" + messages[0]["content"]
@@ -100,9 +106,11 @@ class Tok:
         return {"input_ids": T([[1, 2, 3, 4, 5]]), "attention_mask": T([[1, 1, 1, 1, 1]])}
 
     def batch_decode(self, out, skip_special_tokens=False):
+        self.decode_kw.append({"skip_special_tokens": skip_special_tokens})
         return [text_of(r) for r in out.rows]
 
-    def decode(self, ids):
+    def decode(self, ids, **kw):
+        self.decode_kw.append(kw)
         return text_of(ids)
 
 
@@ -210,16 +218,19 @@ def rig(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Rig:
         monkeypatch.delenv(k, raising=False)
     dream = DreamStub()
     loads: list[hf.Spec] = []
+    toks: list[Tok] = []
 
     def load_model(spec: hf.Spec):
         loads.append(spec)
-        if spec.family == "dream":
-            return dream, Tok()
-        return LLaDAStub(), Tok()
+        tok = Tok()
+        toks.append(tok)
+        return (dream if spec.family == "dream" else LLaDAStub()), tok
 
     monkeypatch.setattr(hf, "load_model", load_model)
     monkeypatch.setattr(hf, "package_version", lambda name: VERSIONS[name])
-    return Rig(repo=repo, runs=runs, root=tmp_path, dream=dream, loads=loads)
+    # the preflight reads a fake 12 GB machine; the figure itself is pinned by the test_ram_* tests
+    monkeypatch.setattr(hf.HF, "ram_gb_after_load", lambda self, cfg: 1.0)
+    return Rig(repo=repo, runs=runs, root=tmp_path, dream=dream, loads=loads, toks=toks)
 
 
 # registry, lazy import
@@ -320,7 +331,7 @@ def test_version_records_the_revision_the_checkout_and_the_libraries(rig: Rig) -
 
 
 def test_version_records_null_for_a_revision_nobody_gave(rig: Rig) -> None:
-    assert rig.run(revision=None) == 0
+    assert rig.run("--allow-unpinned", revision=None) == 0
     assert json.loads(rig.rows()[0]["version"])["model_revision"] is None
     assert rig.loads[0].revision is None              # and nothing was guessed for the download either
 
@@ -596,6 +607,7 @@ def test_load_model_bf16_on_the_gpu(fake_libs: SimpleNamespace) -> None:
     model, tok = hf.load_model(_spec())
     kw = fake_libs.model_kw
     assert kw["trust_remote_code"] is True and kw["revision"] == SHA and kw["torch_dtype"] == "bf16-dtype"
+    assert kw["low_cpu_mem_usage"] is True
     assert "quantization_config" not in kw
     assert fake_libs.tok_kw["revision"] == SHA and fake_libs.tok_kw["trust_remote_code"] is True
     assert model.calls == ["to:cuda", "eval"]
@@ -605,6 +617,7 @@ def test_load_model_4bit_is_nf4_with_bf16_compute_on_gpu_zero(fake_libs: SimpleN
     model, _ = hf.load_model(_spec(quant="4bit", family="dream", model_id="Dream-org/Dream-v0-Instruct-7B"))
     assert fake_libs.bnb_kw == {"load_in_4bit": True, "bnb_4bit_quant_type": "nf4", "bnb_4bit_compute_dtype": "bf16-dtype"}
     assert fake_libs.model_kw["device_map"] == {"": 0} and "quantization_config" in fake_libs.model_kw
+    assert fake_libs.model_kw["low_cpu_mem_usage"] is True
     assert "to:cuda" not in model.calls and model.calls == ["eval"]       # a 4-bit model cannot be moved
 
 
@@ -692,3 +705,173 @@ def test_the_across_weights_flag_reaches_compare_from_the_command_line(rig: Rig,
     monkeypatch.setattr(sys, "argv", ["eval_gsm8k.py", "compare", "gguf", "hf"])
     with pytest.raises(SystemExit):
         eval_gsm8k.main()
+
+
+# chat template and decode arguments the authors use
+
+
+def test_llada_asks_for_the_generation_prompt_and_skips_special_tokens(rig: Rig) -> None:
+    assert rig.run(limit=1) == 0
+    tok = rig.toks[0]
+    assert tok.template_kw == [{"add_generation_prompt": True, "tokenize": False}]
+    assert tok.decode_kw == [{"skip_special_tokens": True}]
+
+
+def test_dream_asks_for_the_generation_prompt(rig: Rig) -> None:
+    assert rig.run(family="dream", limit=1) == 0
+    kw = rig.toks[0].template_kw[0]
+    assert kw["add_generation_prompt"] is True and kw["return_dict"] is True and kw["return_tensors"] == "pt"
+
+
+def test_dream_without_an_eos_token_is_refused_instead_of_split_on_whitespace(rig: Rig,
+                                                                              monkeypatch: pytest.MonkeyPatch) -> None:
+    class NoEos(Tok):
+        eos_token = None
+
+    monkeypatch.setattr(hf, "load_model", lambda spec: (rig.dream, NoEos()))
+    with pytest.raises(SystemExit) as e:
+        rig.run(family="dream", limit=1)
+    assert "end-of-text" in str(e.value) and rig.rows() == []
+
+
+# remote code: an unpinned hub repository is refused
+
+
+def test_a_hub_model_without_a_revision_is_refused(rig: Rig) -> None:
+    for family in ("llada", "dream"):
+        with pytest.raises(SystemExit) as e:
+            rig.run(family=family, revision=None)
+        assert "--model-revision" in str(e.value) and "--allow-unpinned" in str(e.value)
+    assert rig.rows() == [] and rig.loads == []
+
+
+def test_allow_unpinned_runs_warns_and_records_it(rig: Rig, capsys: pytest.CaptureFixture[str]) -> None:
+    assert rig.run("--allow-unpinned", revision=None) == 0
+    assert "not pinned" in capsys.readouterr().err
+    assert rig.rows()[0]["flags"]["unpinned"] is True
+    assert json.loads(rig.rows()[0]["version"])["model_revision"] is None
+
+
+def test_a_pinned_run_does_not_say_unpinned(rig: Rig) -> None:
+    assert rig.run() == 0
+    assert rig.rows()[0]["flags"]["unpinned"] is False
+
+
+def test_a_local_directory_needs_no_revision_and_is_recorded_as_unverified(rig: Rig, tmp_path: Path) -> None:
+    d = tmp_path / "LLaDA-local"
+    d.mkdir()
+    assert rig.run("--hf-model", str(d), revision=None) == 0
+    v = json.loads(rig.rows()[0]["version"])
+    assert v["model_source"] == "local" and v["model_dir"] == str(d) and v["model_revision"] is None
+    assert v["model_revision_verified"] is False
+    assert rig.rows()[0]["flags"]["unpinned"] is False
+
+
+def test_a_hub_model_records_its_source(rig: Rig) -> None:
+    assert rig.run(limit=1) == 0
+    v = json.loads(rig.rows()[0]["version"])
+    assert v["model_source"] == "hub" and v["model_dir"] is None and v["model_revision_verified"] is True
+
+
+# a dirty LLaDA checkout
+
+
+def test_a_locally_edited_checkout_is_recorded_as_dirty(rig: Rig) -> None:
+    (rig.repo / "generate.py").write_text((rig.repo / "generate.py").read_text() + "\n# local edit\n")
+    assert rig.run(limit=1) == 0
+    sha = _git(rig.repo, "rev-parse", "HEAD")
+    assert json.loads(rig.rows()[0]["version"])["llada_commit"] == sha + "-dirty"
+
+
+def test_an_untracked_file_in_the_checkout_does_not_make_it_dirty(rig: Rig) -> None:
+    (rig.repo / "notes.txt").write_text("x")
+    assert rig.run(limit=1) == 0
+    assert json.loads(rig.rows()[0]["version"])["llada_commit"] == _git(rig.repo, "rev-parse", "HEAD")
+
+
+# quantization is part of the weights identity
+
+
+def test_a_bf16_arm_and_a_4bit_arm_of_one_model_differ_in_weights(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(VERSIONS, "bitsandbytes", "0.43.1")
+    assert rig.run(arm="bf16", limit=2) == 0
+    assert rig.run(arm="q4", limit=2, quant="4bit") == 0
+    assert rig.rows("bf16")[0]["model"] == "LLaDA-8B-Instruct"
+    assert rig.rows("q4")[0]["model"] == "LLaDA-8B-Instruct|4bit"
+    with pytest.raises(SystemExit) as e:
+        eval_gsm8k.cmd_compare("bf16", "q4")
+    assert "different models" in str(e.value)
+    assert eval_gsm8k.cmd_compare("bf16", "q4", across_weights=True) == 0
+    assert _doc(rig, "bf16", "q4")["weights_differ"] is True
+
+
+def test_two_bf16_arms_of_one_model_do_not_differ_in_weights(rig: Rig) -> None:
+    assert rig.run(arm="a") == 0
+    assert rig.run(arm="b") == 0
+    assert eval_gsm8k.cmd_compare("a", "b") == 0
+    assert _doc(rig, "a", "b")["weights_differ"] is False
+
+
+# the memory the preflight asks for
+
+
+GIB = 1.073741824
+
+
+def _hf(**kw) -> hf.HF:
+    base = dict(hf_model=None, llada_repo=None, quant="none", model_revision=None, allow_unpinned=False)
+    return hf.HF(SimpleNamespace(**{**base, **kw}))
+
+
+def _cfg(model: str) -> engines.GenConfig:
+    return engines.GenConfig(model=model)
+
+
+def test_ram_bf16_is_one_quarter_over_the_weights_plus_three_gb() -> None:
+    assert REAL_RAM_GB(_hf(), _cfg("GSAI-ML/LLaDA-8B-Instruct")) == pytest.approx(14.93 * GIB * 1.25 + 3, abs=0.01)
+    assert REAL_RAM_GB(_hf(), _cfg("Dream-org/Dream-v0-Instruct-7B")) == pytest.approx(14.19 * GIB * 1.25 + 3, abs=0.01)
+
+
+def test_ram_4bit_is_the_weights_over_three_and_a_half_plus_three_gb() -> None:
+    assert REAL_RAM_GB(_hf(quant="4bit"), _cfg("GSAI-ML/LLaDA-8B-Instruct")) == pytest.approx(14.93 * GIB / 3.5 + 3, abs=0.01)
+
+
+def test_ram_of_a_local_directory_sums_its_safetensors(tmp_path: Path) -> None:
+    for i in range(2):
+        with (tmp_path / f"model-{i}.safetensors").open("wb") as f:
+            f.truncate(1_000_000_000)
+    (tmp_path / "other.bin").write_bytes(b"x" * 5000)
+    assert REAL_RAM_GB(_hf(hf_model=str(tmp_path)), _cfg("m")) == pytest.approx(2.0 * 1.25 + 3, abs=0.001)
+
+
+def test_ram_fails_closed_for_an_unknown_repository_and_a_directory_without_weights(tmp_path: Path) -> None:
+    assert REAL_RAM_GB(_hf(), _cfg("someone/LLaDA-custom")) is None
+    assert REAL_RAM_GB(_hf(hf_model=str(tmp_path)), _cfg("m")) is None
+
+
+def test_an_unknown_model_size_fails_the_preflight_memory_check(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(hf.HF, "ram_gb_after_load", REAL_RAM_GB)
+    with pytest.raises(SystemExit) as e:
+        rig.run(family="someone/LLaDA-custom")
+    assert "memory" in str(e.value) and rig.rows() == []
+
+
+def test_arm_session_sizes_from_the_file_unless_the_engine_gives_the_figure(tmp_path: Path,
+                                                                           monkeypatch: pytest.MonkeyPatch) -> None:
+    import isolation
+
+    seen: list = []
+
+    class Started:
+        def finish(self) -> None:
+            pass
+
+    monkeypatch.setattr(isolation, "begin_arm", lambda arm, **kw: seen.append(kw["need_ram_gb"]) or Started())
+    args = SimpleNamespace(isolation_retries=0, allow_noisy=False, tune=False)
+    f = tmp_path / "m.gguf"
+    f.write_bytes(b"x" * 1000)
+    for model, kw in ((f, {}), (tmp_path / "absent.gguf", {}), (f, {"ram_gb": None}), (f, {"ram_gb": 7.5})):
+        with isolation.arm_session(args, arm="a", device="cpu", model=model, runs_dir=tmp_path, **kw):
+            pass
+    assert seen == [isolation.need_ram_gb(f), None, None, 7.5]
+    assert seen[0] is not None
