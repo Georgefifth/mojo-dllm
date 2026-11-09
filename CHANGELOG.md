@@ -14,7 +14,10 @@ semantic versioning (0.y: minor bumps may break things).
   temperature 0 and never starts or stops a server. `version` records the release `GET /version` reports plus the
   declared checkpoint, quantization and attention backend, and the arm's `model` carries the quantization so
   `compare --across-weights` sees different weights. `forward_passes` is the change of vLLM's
-  `vllm:diffusion_num_denoising_steps_total` counter across one request, and null when the server has none. The
+  `vllm:diffusion_num_denoising_steps` counter (read under that name and under its `_total` exposition name) across
+  one request, null when the server has none, and refused unless `--max-num-seqs 1` is declared, because the counter
+  is server-wide. Server text in errors is stripped of control characters and capped, and the arm's `--model` must
+  equal the server's reported `root` or served name. The
   run is refused for a served model the server does not list, an HTTP error, an empty completion or a response
   with no token counts. `flags` says `"server": "remote"`: the isolation checks see only the client machine.
   `bench/engines/_http.py` is the shared standard-library client (no credentials, no cookies, no redirects, no

@@ -9,16 +9,19 @@ Standard library only (`urllib`), so the frozen environment needs nothing new. W
   default; a proxy in the path changes the timing a benchmark reads and sends prompts through a third machine.
 - It never retries. A failed request raises; a retry could hide a failure, and a resent generation would be timed
   twice. It never follows a redirect: the target would be a second server nobody named.
-- The response is read in pieces under one deadline (`timeout_s` for the whole answer, not per socket read) and a
-  body over `max_bytes` is refused, so a hung or hostile server cannot stall the run or fill the memory.
+- One deadline (`timeout_s`) covers the whole exchange: connect, headers and body. The request runs in a daemon
+  thread that the caller stops waiting for at the deadline (urllib's own timeout restarts at every socket read, so a
+  server that trickles bytes could outlast it). A body over `max_bytes` is refused, so a hung or hostile server
+  cannot stall the run or fill the memory.
 - Errors carry what the server said: the status and its message (`error.message` of an OpenAI-style body, else the
-  start of the text), so a run that stops says why.
+  start of the text), so a run that stops says why. Server text reaches the terminal only through `clean`: control
+  characters are dropped (a terminal escape cannot ride in an error) and the length is capped.
 """
 
 from __future__ import annotations
 
 import json
-import time
+import threading
 import urllib.error
 import urllib.request
 from http.client import HTTPException
@@ -28,8 +31,15 @@ from . import EngineError
 
 DEFAULT_MAX_BYTES = 8 * 1024 * 1024     # a 256-token completion is a few KB; the metrics page is the largest answer
 ERROR_BODY_BYTES = 4096
+CLEAN_LIMIT = 400
 CHUNK = 64 * 1024
 USER_AGENT = "mojo-dllm-bench"
+
+
+def clean(text: str, limit: int = CLEAN_LIMIT) -> str:
+    """Server text made safe to print: only printable characters and newlines survive, and the length is capped."""
+    text = "".join(ch for ch in text if ch == "\n" or ch.isprintable())
+    return text if len(text) <= limit else text[:limit] + "..."
 
 
 class HttpError(EngineError):
@@ -80,6 +90,9 @@ class HttpClient:
         if parts.username is not None or parts.password is not None:
             raise EngineError("the base URL carries credentials (user:password@): this client sends none, "
                               "remove them from the URL")
+        if parts.query or parts.fragment:
+            raise EngineError("the base URL has a query or fragment, which the path join would break: "
+                              "give scheme, host, port and an optional path prefix only")
         self.base = base_url.rstrip("/")
         self.timeout_s = timeout_s
         self.max_bytes = max_bytes
@@ -99,7 +112,7 @@ class HttpClient:
             return json.loads(raw.decode("utf-8"))
         except ValueError as e:      # UnicodeDecodeError is a ValueError
             raise EngineError(f"{self.base}{path} answered with a body that is not JSON: "
-                              f"{raw[:200].decode('utf-8', errors='replace')!r}") from e
+                              f"{clean(repr(raw[:200].decode('utf-8', errors='replace')))}") from e
 
     def _request(self, method: str, path: str, body: bytes | None) -> bytes:
         url = self.base + path
@@ -107,15 +120,38 @@ class HttpClient:
         if body is not None:
             headers["Content-Type"] = "application/json"
         req = urllib.request.Request(url, data=body, headers=headers, method=method)
-        deadline = time.monotonic() + self.timeout_s
         timed_out = f"{method} {url} timed out after {self.timeout_s:g} s"
+        result: dict = {}
+
+        def work() -> None:
+            try:
+                result["body"] = self._exchange(req, method, url, timed_out, result)
+            except BaseException as e:  # noqa: BLE001  (handed to the caller's thread below)
+                result["error"] = e
+
+        worker = threading.Thread(target=work, daemon=True)
+        worker.start()
+        worker.join(self.timeout_s)
+        if worker.is_alive():
+            resp = result.get("resp")
+            if resp is not None:
+                try:
+                    resp.close()
+                except Exception:  # noqa: BLE001  (the worker may be reading it)
+                    pass
+            raise EngineError(timed_out)
+        if "error" in result:
+            raise result["error"]
+        return result["body"]
+
+    def _exchange(self, req: urllib.request.Request, method: str, url: str, timed_out: str, result: dict) -> bytes:
         try:
             resp = self._opener.open(req, timeout=self.timeout_s)
         except urllib.error.HTTPError as e:
             if 300 <= e.code < 400:
                 raise EngineError(f"{method} {url} answered with a redirect ({e.code}) to "
-                                  f"{e.headers.get('Location')!r}: redirects are not followed") from None
-            msg = _server_message(e.read(ERROR_BODY_BYTES))
+                                  f"{clean(repr(e.headers.get('Location')))}: redirects are not followed") from None
+            msg = clean(_server_message(e.read(ERROR_BODY_BYTES)))
             raise HttpError(e.code, f"{method} {url} answered HTTP {e.code}: {msg}") from None
         except urllib.error.URLError as e:
             if isinstance(e.reason, TimeoutError):
@@ -125,6 +161,7 @@ class HttpClient:
             raise EngineError(timed_out) from None
         except (OSError, HTTPException) as e:
             raise EngineError(f"{method} {url} failed: {type(e).__name__}: {e}") from None
+        result["resp"] = resp
         with resp:
             declared = resp.headers.get("Content-Length")
             if declared is not None and declared.isdigit() and int(declared) > self.max_bytes:
@@ -134,8 +171,6 @@ class HttpClient:
             size = 0
             try:
                 while True:
-                    if time.monotonic() > deadline:
-                        raise EngineError(timed_out)
                     piece = resp.read1(CHUNK)
                     if not piece:
                         break

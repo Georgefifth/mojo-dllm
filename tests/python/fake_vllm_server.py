@@ -103,8 +103,8 @@ class Handler(BaseHTTPRequestHandler):
             nasty = "\x1b[2J\x1b]0;owned\x07bad\rline\nnext " + "y" * 2000
             return self._send(500, {"error": {"message": nasty}})
         if mode == "header_trickle":
-            self.send_response_only(200)
             try:
+                self.wfile.write(b"HTTP/1.0 200 OK\r\n")
                 for _ in range(12):
                     self.wfile.write(b"X-Slow: 1\r\n")
                     self.wfile.flush()
