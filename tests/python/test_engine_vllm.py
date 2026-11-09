@@ -406,3 +406,8 @@ def test_generate_s_covers_the_request_only(rig: Rig) -> None:
     e, cfg = rig.ready()
     g = e.generate("q", cfg)
     assert 0 < g["generate_s"] < 5
+
+
+def test_a_step_count_the_server_cannot_take_is_refused(rig: Rig) -> None:
+    with pytest.raises(SystemExit, match="--steps"):
+        rig.engine().check(rig.cfg(steps=48))

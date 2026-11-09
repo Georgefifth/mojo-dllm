@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+from urllib.parse import urlsplit
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ANSWER = "The answer is 18."
@@ -66,15 +67,16 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         self._log()
         st = self.st
-        if self.path == "/v1/models":
+        route = urlsplit(self.path).path          # a proxied request carries the absolute URL
+        if route == "/v1/models":
             if st.models_status != 200:
                 return self._send(st.models_status, {"error": {"message": "models are down", "code": st.models_status}})
             return self._send(200, {"object": "list", "data": st.models})
-        if self.path == "/version":
+        if route == "/version":
             if isinstance(st.version, int):
                 return self._send(st.version, {"detail": "Not Found"})
             return self._send(200, st.version)
-        if self.path == "/metrics":
+        if route == "/metrics":
             if st.metrics is None:
                 return self._send(404, {"detail": "Not Found"})
             text = st.metrics_text() if st.metrics == "live" else st.metrics
@@ -152,10 +154,15 @@ class Handler(BaseHTTPRequestHandler):
                 "usage": {"prompt_tokens": 41, "completion_tokens": 9, "total_tokens": 50}}
 
 
+class QuietServer(ThreadingHTTPServer):
+    def handle_error(self, request: object, client_address: object) -> None:   # a client that hangs up is expected
+        pass
+
+
 class FakeServer:
     def __init__(self) -> None:
         self.state = State()
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.httpd = QuietServer(("127.0.0.1", 0), Handler)
         self.httpd.daemon_threads = True
         self.httpd.state = self.state            # type: ignore[attr-defined]
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
