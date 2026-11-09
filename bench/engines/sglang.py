@@ -6,10 +6,13 @@ the other engines use, `max_completion_tokens` equal to the generation length an
 the model's chat template, so the template is the server's and `flags` says so.
 
 Field names and rules were read from SGLang's source on 2026-11-09, not from memory. `main` was at
-dfaca5681ddc20e31d50f2dfe5dfada269f12bbd, and the release v0.5.23 (2026-11-02) has the same code in each place:
+dfaca5681ddc20e31d50f2dfe5dfada269f12bbd. The release v0.5.23 (2026-11-02) was compared for `available_models` and
+`server_info` (identical), `model_info` (the same keys, built inline) and `gemma4_renoise.py` (one import line differs);
+every other file below was read at `main` only:
 
 - `GET /v1/models` answers one card whose `id` and `root` are both the served model name, and `max_model_len`
-  (python/sglang/srt/entrypoints/http_server.py, `available_models`). Unlike vLLM, `root` is not the model path.
+  (python/sglang/srt/entrypoints/http_server.py, `available_models`). Unlike vLLM, `root` is not the model path. The
+  served name defaults to `model_path` (python/sglang/srt/arg_groups/serving_hook.py), so `--served-model` defaults to `--model`.
 - `GET /model_info` answers `model_path` (the checkpoint) and `served_model_name`; `GET /server_info` answers the
   resolved server arguments (`dllm_algorithm`, `dtype`, `quantization`, `max_running_requests`, `chat_template`, ...)
   and `version` (http_server.py, `model_info` and `server_info`; the arguments come from `ServerArgs.resolved_dict`).
@@ -24,9 +27,9 @@ dfaca5681ddc20e31d50f2dfe5dfada269f12bbd, and the release v0.5.23 (2026-11-02) h
   the engine does not send them and `flags.sampling` says so.
 - `Gemma4Renoise.configure_server_args` refuses a quantized checkpoint ("DiffusionGemma does not support quantized
   loading"), so the weights are bf16 or another dtype and the arm's `model` carries the dtype, not a quantization.
-- Non-streaming: the scheduler emits a request's output only when it finishes unless the request streams
-  (python/sglang/srt/managers/scheduler_components/output_streamer.py), and the cookbook says streaming is block-level.
-  The engine sends `stream: false` and reads one completion.
+- Non-streaming: `_wait_one_response` (python/sglang/srt/managers/tokenizer_manager.py) yields an unfinished output only
+  when the request streams, and the cookbook says streaming is block-level, one denoised canvas per chunk. The engine
+  sends `stream: false` and reads one completion.
 - An error body is `{"object": "error", "message": ..., "type": ..., "code": ...}` (serving_base.py,
   `create_error_response`); `_http` reads the top-level `message`.
 
