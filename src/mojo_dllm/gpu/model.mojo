@@ -373,11 +373,11 @@ struct GpuDiffusionLM(DenoisingModel, Movable):
         mut self, name: String, m: DevMatrix, stage: Bytes
     ) raises:
         var t = self.gguf.tensor(name)
-        self.gguf.map.populate(self.gguf.data_addr(t), t.n_bytes)
+        self.gguf.map.populate(t.data_offset, t.n_bytes)
         stage_matrix(
             self.gguf.data_addr(t), m.ggml_type, m.rows, m.cols, stage.u8()
         )
-        self.gguf.map.drop(self.gguf.data_addr(t), t.n_bytes)
+        self.gguf.map.drop(t.data_offset, t.n_bytes)
         self._upload(
             m.off, staged_matrix_bytes(m.ggml_type, m.rows, m.cols), stage
         )

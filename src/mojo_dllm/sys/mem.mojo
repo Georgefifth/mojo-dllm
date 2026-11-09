@@ -16,6 +16,7 @@ comptime ALIGN = 64
 comptime F32Ptr = Pointer[Float32, MutAnyOrigin]
 comptime I8Ptr = Pointer[Int8, MutAnyOrigin]
 comptime U8Ptr = Pointer[UInt8, MutAnyOrigin]
+comptime ConstU8Ptr = Pointer[UInt8, ImmutAnyOrigin]
 comptime I32Ptr = Pointer[Int32, MutAnyOrigin]
 comptime F64Ptr = Pointer[Float64, MutAnyOrigin]
 comptime I16Ptr = Pointer[Int16, MutAnyOrigin]

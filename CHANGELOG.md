@@ -195,6 +195,11 @@ semantic versioning (0.y: minor bumps may break things).
   with its address and refuse a source that does not hold exactly the rows the
   shape needs. Callers that build them by hand (the benchmarks, the tests) pass
   the size of the buffer (#218).
+- `Mapping.drop` and `Mapping.populate` take an offset into the file in place of
+  an absolute address and raise unless the range lies inside the mapping; a
+  bad range used to reach `madvise`, where `MADV_DONTNEED` outside the map
+  zero-fills heap pages. `Mapping.ptr()` returns a pointer with an immutable
+  origin, so a store through it no longer compiles (#216).
 - Model configuration rejects incompatible RoPE widths/scaling and attention
   key lengths, and unsupported-architecture errors list LLaDA and Dream.
 - Matrix load errors name the tensor and distinguish an unsupported type from

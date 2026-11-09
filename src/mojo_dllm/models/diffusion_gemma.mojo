@@ -91,9 +91,9 @@ def _load_matrix(
             + String(rows)
             + "]"
         )
-    g.map.populate(g.data_addr(t), t.n_bytes)
+    g.map.populate(t.data_offset, t.n_bytes)
     var pm = PackedMatrix(g.data_addr(t), t.n_bytes, t.ggml_type, rows, cols)
-    g.map.drop(g.data_addr(t), t.n_bytes)
+    g.map.drop(t.data_offset, t.n_bytes)
     return pm^
 
 
@@ -207,8 +207,8 @@ struct GemmaLayer(Movable):
         var gu = g.tensor(p + "ffn_gate_up_exps.weight")
         var dn = g.tensor(p + "ffn_down_exps.weight")
         var scales = _load_vector(g, p + "ffn_down_exps.scale", c.n_experts)
-        g.map.populate(g.data_addr(gu), gu.n_bytes)
-        g.map.populate(g.data_addr(dn), dn.n_bytes)
+        g.map.populate(gu.data_offset, gu.n_bytes)
+        g.map.populate(dn.data_offset, dn.n_bytes)
         self.experts = ExpertWeights(
             g.data_addr(gu),
             gu.n_bytes,
@@ -221,8 +221,8 @@ struct GemmaLayer(Movable):
             c.n_experts,
             scales.ptr(),
         )
-        g.map.drop(g.data_addr(gu), gu.n_bytes)
-        g.map.drop(g.data_addr(dn), dn.n_bytes)
+        g.map.drop(gu.data_offset, gu.n_bytes)
+        g.map.drop(dn.data_offset, dn.n_bytes)
 
 
 struct DiffusionGemma(Movable):

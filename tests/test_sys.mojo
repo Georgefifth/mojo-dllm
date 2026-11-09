@@ -125,6 +125,67 @@ def test_page_ranges() raises:
     # file-backed mappings read the same bytes again. Test the range directly.
 
 
+def _refuses_advice(offset: Int, size: Int) raises:
+    # Every size here is under a page, so even a guard that is mutated away
+    # only reaches `madvise` with an empty range of whole pages for `drop`.
+    var m = Mapping("tests/fixtures/bad-magic.gguf")
+    assert_equal(m.size, 64)
+    var want = "outside the 64-byte mapping of tests/fixtures/bad-magic.gguf"
+    with assert_raises(
+        contains="drop range ["
+        + String(offset)
+        + ", +"
+        + String(size)
+        + ") is "
+        + want
+    ):
+        m.drop(offset, size)
+    with assert_raises(
+        contains="populate range ["
+        + String(offset)
+        + ", +"
+        + String(size)
+        + ") is "
+        + want
+    ):
+        m.populate(offset, size)
+
+
+def test_mapping_advice_refuses_a_range_below_zero() raises:
+    _refuses_advice(-1, 8)
+    _refuses_advice(0, -1)
+    _refuses_advice(-64, 64)
+
+
+def test_mapping_advice_refuses_a_range_past_the_end() raises:
+    _refuses_advice(0, 65)
+    _refuses_advice(1, 64)
+    _refuses_advice(65, 0)
+    _refuses_advice(64, 1)
+
+
+def test_mapping_advice_refuses_a_range_that_wraps() raises:
+    # offset + size wraps negative, so a check written as a sum accepts these.
+    _refuses_advice(8, Int.MAX)
+    _refuses_advice(Int.MAX, 8)
+    _refuses_advice(Int.MAX - 3, 8)
+
+
+def test_mapping_advice_accepts_ranges_inside_the_map() raises:
+    var m = Mapping("tests/fixtures/bad-magic.gguf")
+    m.populate(0, 64)
+    m.populate(32, 32)
+    m.populate(64, 0)
+    m.populate(0, 0)
+    m.drop(0, 64)
+    m.drop(32, 32)
+    m.drop(64, 0)
+    # The bytes are still readable after the advice.
+    var expected = "GGUX".as_bytes()
+    for i in range(4):
+        assert_equal(m.ptr().unsafe_load(i), expected[i])
+
+
 def check_parallel(n: Int, threads: Int) raises:
     var counts = Bytes((max(n, 0) + 1) * 8)
     var ptr = AtomicPtr(unsafe_from_address=counts.addr)

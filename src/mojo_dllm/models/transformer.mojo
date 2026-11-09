@@ -661,9 +661,9 @@ def _load_matrix(
             + "]"
         )
     check_matrix_type(t)
-    g.map.populate(g.data_addr(t), t.n_bytes)
+    g.map.populate(t.data_offset, t.n_bytes)
     var pm = PackedMatrix(g.data_addr(t), t.n_bytes, t.ggml_type, rows, cols)
-    g.map.drop(g.data_addr(t), t.n_bytes)
+    g.map.drop(t.data_offset, t.n_bytes)
     return pm^
 
 
