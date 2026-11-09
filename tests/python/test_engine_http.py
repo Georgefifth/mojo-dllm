@@ -5,9 +5,11 @@ Every test talks to the fake server in fake_vllm_server.py on 127.0.0.1. Nothing
 
 from __future__ import annotations
 
+import http.client
 import socket
 import sys
 import time
+import urllib.error
 from pathlib import Path
 
 import pytest
@@ -251,3 +253,84 @@ def test_a_server_that_accepts_and_never_answers_times_out() -> None:
         with pytest.raises(EngineError, match="timed out"):
             _http.HttpClient(url, timeout_s=0.5).get_json("/v1/models")
         assert time.monotonic() - t0 < 2.0
+
+
+# the text of an operating-system error reaches the terminal through `clean` too
+
+
+class _FailsToOpen:
+    """An opener whose connection attempt fails with the given exception."""
+
+    def __init__(self, exc: BaseException) -> None:
+        self.exc = exc
+
+    def open(self, req: object, timeout: float | None = None) -> object:
+        raise self.exc
+
+
+class _BodyFails:
+    """An opener that connects, and whose body read fails with an error carrying the given text."""
+
+    def __init__(self, text: str = "body\x1b[2J cut\rshort") -> None:
+        self.text = text
+
+    def open(self, req: object, timeout: float | None = None) -> object:
+        text = self.text
+
+        class Response:
+            headers: dict = {}
+
+            def __enter__(self) -> "Response":
+                return self
+
+            def __exit__(self, *a: object) -> bool:
+                return False
+
+            def read1(self, n: int) -> bytes:
+                raise OSError(text)
+
+        return Response()
+
+
+def assert_clean(text: str) -> None:
+    assert "\x1b" not in text and "\r" not in text and "\x07" not in text, repr(text)
+
+
+@pytest.mark.parametrize("reason", ["refused\x1b[31m by\rhost", OSError(111, "Connection refused\x1b]0;x\x07")])
+def test_the_text_of_a_connection_error_is_clean(server: FakeServer, reason: object) -> None:
+    c = client(server)
+    c._opener = _FailsToOpen(urllib.error.URLError(reason))        # type: ignore[assignment]
+    with pytest.raises(EngineError) as e:
+        c.get_json("/v1/models")
+    assert str(e.value).startswith("cannot reach ") and "efused" in str(e.value)
+    assert_clean(str(e.value))
+
+
+@pytest.mark.parametrize("exc", [OSError("reset\x1b[2J by peer"), http.client.BadStatusLine("\x1b[31mHTTP/9.9")])
+def test_the_text_of_a_failed_request_is_clean(server: FakeServer, exc: BaseException) -> None:
+    c = client(server)
+    c._opener = _FailsToOpen(exc)                                   # type: ignore[assignment]
+    with pytest.raises(EngineError) as e:
+        c.get_json("/v1/models")
+    assert " failed: " in str(e.value) and type(exc).__name__ in str(e.value)
+    assert_clean(str(e.value))
+
+
+def test_the_text_of_a_failed_body_read_is_clean(server: FakeServer) -> None:
+    c = client(server)
+    c._opener = _BodyFails()                                        # type: ignore[assignment]
+    with pytest.raises(EngineError) as e:
+        c.get_json("/v1/models")
+    assert "failed while reading the body" in str(e.value) and "OSError" in str(e.value)
+    assert_clean(str(e.value))
+
+
+@pytest.mark.parametrize("opener", [_FailsToOpen(urllib.error.URLError("x" * 5000)), _FailsToOpen(OSError("x" * 5000)),
+                                    _BodyFails("x" * 5000)], ids=["connection", "request", "body"])
+def test_a_long_operating_system_error_text_is_capped(server: FakeServer, opener: object) -> None:
+    c = client(server)
+    c._opener = opener                                              # type: ignore[assignment]
+    with pytest.raises(EngineError) as e:
+        c.get_json("/v1/models")
+    assert "x" * 400 in str(e.value) and "x" * 401 not in str(e.value)       # cut at the cap, not before it
+    assert len(str(e.value)) < 700
