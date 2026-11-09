@@ -37,6 +37,7 @@ from std.time import perf_counter_ns
 from mojo_dllm.formats.gguf import GGUFFile, TensorInfo
 from mojo_dllm.kernels.packed import PackedMatrix, pgemm
 from mojo_dllm.kernels.qgemm import QActs, quantize_acts
+from mojo_dllm.kernels.softembed import W as SOFTEMBED_W
 from mojo_dllm.kernels.ops import (
     rmsnorm,
     rope_table,
@@ -564,6 +565,17 @@ def _read_diffusion_gemma(g: GGUFFile) raises -> ModelConfig:
     # Every key is read before the first tensor, so a missing key is named
     # first even in a file without tensors.
     var vocab = g.tensor(GEMMA_TOKEN_EMBD).n_rows()
+    # Self-conditioning builds its transposed table in groups of W rows; it
+    # used to say so only at the first self-conditioned step.
+    if g.has_tensor("self_cond_gate.weight") and vocab % SOFTEMBED_W != 0:
+        raise Error(
+            GEMMA_TOKEN_EMBD
+            + " has "
+            + String(vocab)
+            + " rows, but self-conditioning (self_cond_gate.weight is"
+            " present) needs a vocabulary that is a multiple of "
+            + String(SOFTEMBED_W)
+        )
 
     var c = ModelConfig(
         arch=String(GEMMA_ARCH),

@@ -248,6 +248,13 @@ semantic versioning (0.y: minor bumps may break things).
   tensor name, a string value, a token text) is valid UTF-8 and raises with the
   entry or key, the file offset and the bad byte; `inspect` prints
   `<string, N bytes, not valid UTF-8 at byte B>` for such a value (#225).
+- Three validity gaps close (#227): `Gemma4Vocab` and the byte-level loader refuse
+  a negative special token id other than -1, `Gemma4Vocab` refuses a token type
+  outside 0 to 6 (it used to read it as attribute 0, which decodes to empty
+  text), a DiffusionGemma file with `self_cond_gate.weight` and a vocabulary
+  that is not a multiple of 8 is refused at load and not at the first
+  self-conditioned step, and `Rng.below` raises for a bound of 0 or less in
+  place of returning `n - 1`.
 - Model configuration rejects incompatible RoPE widths/scaling and attention
   key lengths, and unsupported-architecture errors list LLaDA and Dream.
 - Matrix load errors name the tensor and distinguish an unsupported type from

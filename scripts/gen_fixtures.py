@@ -922,6 +922,11 @@ def diffusion_gemma() -> None:
         types={"blk.0.ffn_down_exps.weight": "F32"},  # one expert row of 1 is no Q5_0 block
     )
     # Files with one kind of layer pass: no rope table without a global layer, no attn_v without a sliding one.
+    # Self-conditioning decodes the embedding table in groups of 8 rows (#227).
+    gate = {"self_cond_gate.weight": ((GEMMA["hidden"], GEMMA["ffn"]), "Q4_K")}
+    write_gemma(out / "vocab-500-self-cond.gguf", c={**GEMMA, "vocab": 500}, add=gate)
+    write_gemma(out / "vocab-504-self-cond.gguf", c={**GEMMA, "vocab": 504}, add=gate)
+    write_gemma(out / "vocab-500-no-self-cond.gguf", c={**GEMMA, "vocab": 500})
     write_gemma(out / "all-sliding.gguf", c={**GEMMA, "sliding": [True, True], "kv": [4, 4]})
     write_gemma(out / "all-global.gguf", c={**GEMMA, "sliding": [False, False], "kv": [1, 1]})
     h, ex, ef = GEMMA["hidden"], GEMMA["experts"], GEMMA["expert_ffn"]
@@ -1062,7 +1067,11 @@ def gemma4_tiny() -> None:
         w.add_array("tokenizer.ggml.merges", list(merges))
         special = {"bos": 2, "eos": 1, "unknown": 3, "padding": 0, "mask": 4, **(ids or {})}
         for key, value in special.items():
-            if key not in omit:
+            if key in omit:
+                continue
+            if value < 0:
+                w.add_int32(f"tokenizer.ggml.{key}_token_id", value)
+            else:
                 w.add_uint32(f"tokenizer.ggml.{key}_token_id", value)
         w.add_bool("tokenizer.ggml.add_space_prefix", False)
         w.add_bool("tokenizer.ggml.add_bos_token", add_bos)
@@ -1125,6 +1134,13 @@ def gemma4_tiny() -> None:
     # <eos> and <turn|> typed normal (1): llama.cpp overrides them to control because they end generation.
     t, k = with_entries((1, None, 1), (6, None, 1))
     write("forced-control.gguf", add_bos=False, tokens=t, types=k)
+    # A token type outside 0 to 6 (#227), a negative special id other than -1, and -1 written out.
+    t, k = with_entries((plain_start, None, 9))
+    write("unknown-token-type.gguf", add_bos=False, tokens=t, types=k)
+    t, k = with_entries((plain_start, None, -1))
+    write("negative-token-type.gguf", add_bos=False, tokens=t, types=k)
+    write("special-negative.gguf", add_bos=False, ids={"padding": -2})
+    write("special-minus-one.gguf", add_bos=False, ids={"padding": -1})
     # EOS is the end-of-turn token itself: the end-of-generation list must hold its id once.
     write("eos-is-end-of-turn.gguf", add_bos=False, ids={"eos": 6})
     # No <turn|> and no <|tool_response>: nothing for the end-of-generation list to add beyond EOS.

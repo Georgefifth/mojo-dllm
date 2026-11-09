@@ -351,6 +351,15 @@ def test_byte_level_loader_refuses_add_bos_without_a_bos_id() raises:
     )
 
 
+def test_byte_level_loader_refuses_a_negative_special_id() raises:
+    _refuses_tokenizer(
+        "special-negative", "metadata key tokenizer.ggml.bos_token_id is -5"
+    )
+    assert_equal(
+        Tokenizer(GGUFFile(FIX + "gpt2-tiny/special-minus-one.gguf")).pad_id, -1
+    )
+
+
 def test_decode_refuses_ids_outside_the_vocabulary() raises:
     var tok = Tokenizer(GGUFFile(FIX + "gpt2-tiny/ids.gguf"))
     with assert_raises(contains="token id -1 is outside the vocabulary"):

@@ -29,6 +29,20 @@ def _refuses(name: String, needle: String) raises:
     raise Error(name + ": the config accepted the file")
 
 
+def test_self_conditioning_needs_a_vocabulary_that_is_a_multiple_of_8() raises:
+    var DGF = DG
+    _ = ModelConfig(GGUFFile(DGF + "vocab-504-self-cond.gguf"))
+    _ = ModelConfig(GGUFFile(DGF + "vocab-500-no-self-cond.gguf"))
+    _refuses(
+        "vocab-500-self-cond",
+        (
+            "token_embd.weight has 500 rows, but self-conditioning"
+            " (self_cond_gate.weight is present) needs a vocabulary that is a"
+            " multiple of 8"
+        ),
+    )
+
+
 def _required_keys() -> List[String]:
     return [
         A + "block_count",

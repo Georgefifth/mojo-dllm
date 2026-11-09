@@ -45,6 +45,14 @@ def special_token_id(g: GGUFFile, key: String, n_tokens: Int) raises -> Int:
     """The token id stored under `key`, or -1 when the key is absent. An id
     outside the vocabulary is an error."""
     var id = g.get_int_or(key, -1)
+    if id < -1:
+        raise Error(
+            "metadata key "
+            + key
+            + " is "
+            + String(id)
+            + "; a special token id is a token id or -1"
+        )
     if id >= n_tokens:
         raise Error(
             "metadata key "

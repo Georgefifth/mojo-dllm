@@ -171,8 +171,11 @@ struct Rng(Movable):
             1.0 / 9007199254740992.0
         )
 
-    def below(mut self, n: Int) -> Int:
-        """Uniform in [0, n): the 53 high bits scaled, unbiased to 2^-53."""
+    def below(mut self, n: Int) raises -> Int:
+        """Uniform in [0, n): the 53 high bits scaled, unbiased to 2^-53. `n`
+        must be positive."""
+        if n <= 0:
+            raise Error("Rng.below needs a positive bound, got " + String(n))
         var x = Float64(self.next_u64() >> 11) * (1.0 / 9007199254740992.0)
         return min(Int(x * Float64(n)), n - 1)
 
@@ -778,7 +781,7 @@ def eb_temperature(
     return t_min + (t_max - t_min) * (Float64(cur) / Float64(steps))
 
 
-def eb_initial_canvas(mut rng: Rng, n: Int, vocab: Int) -> List[Int]:
+def eb_initial_canvas(mut rng: Rng, n: Int, vocab: Int) raises -> List[Int]:
     """`n` ids drawn uniformly from the whole vocabulary, special tokens
     included."""
     var out = List[Int](capacity=n)

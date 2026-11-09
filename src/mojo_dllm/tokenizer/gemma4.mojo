@@ -235,6 +235,14 @@ struct Gemma4Vocab(Movable):
         self.ids = validate_token_table(self.tokens, len(types))
         self.attrs = List[Int](capacity=n)
         for i in range(n):
+            if types[i] < 0 or types[i] > 6:
+                raise Error(
+                    "tokenizer.ggml.token_type["
+                    + String(i)
+                    + "] is "
+                    + String(types[i])
+                    + ", expected a type from 0 to 6"
+                )
             var attr = _attr_of_type(types[i])
             # llama.cpp turns these into control tokens (they end generation).
             # The vocabulary holds no other name from its list of 65.

@@ -63,6 +63,18 @@ def test_argmax_and_prob_in_f64() raises:
     assert_true(abs(r[1] - 1.0 / z) < 1e-12, "prob " + String(r[1]))
 
 
+def test_rng_below_refuses_a_bound_that_is_not_positive() raises:
+    var r = Rng(5)
+    assert_equal(r.below(1), 0)
+    for _ in range(50):
+        var v = r.below(7)
+        assert_true(v >= 0 and v < 7)
+    with assert_raises(contains="Rng.below needs a positive bound, got 0"):
+        _ = r.below(0)
+    with assert_raises(contains="Rng.below needs a positive bound, got -3"):
+        _ = r.below(-3)
+
+
 def test_rng_is_deterministic() raises:
     var a = Rng(42)
     var b = Rng(42)
