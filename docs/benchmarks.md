@@ -478,19 +478,33 @@ total cost in the pull request that adds the arm.
 (`recipes/models/Google/diffusiongemma-26B-A4B-it.yaml` in vllm-project/recipes, read 2026-11-09), and vLLM 0.24.0 or
 newer. An RTX A6000 is not a verified target. The FP8-dynamic checkpoint is 25.33 GiB (Hugging Face API, 2026-11-09).
 
-1. **One time on your machine.** Install the Vast.ai CLI, store your API key and create a throwaway SSH key. The key
-   prompt reads without echo; cancel with Ctrl-C and nothing is written.
+1. **One time on your machine.** Install the Vast.ai CLI, read your API key into an environment variable and create a
+   throwaway SSH key. The key prompt reads without echo and the key never appears in a command line; cancel with
+   Ctrl-C and nothing is written.
 
    ```bash
    uv tool install vastai
    ssh-keygen -t ed25519 -N '' -C vast-dgemma-throwaway -f ~/.ssh/vast_dgemma
    echo "== Vast.ai API key (console.vast.ai, Account, API Keys) =="
-   read -rs -p "key: " K; echo; vastai set api-key "$K"; unset K
+   read -rs -p "key: " VAST_API_KEY; echo; export VAST_API_KEY
    vastai create ssh-key "$(cat ~/.ssh/vast_dgemma.pub)"
    ```
 
-   This touches `~/.config/vastai`, `~/.ssh/vast_dgemma*` and your account's key list. To undo it, delete those
-   paths and remove both keys in the Vast.ai console. I have not run `vastai create ssh-key` here; check it with
+   Run every later `vastai` command in this same shell, and close it when you are done: the key lives in that shell's
+   environment, and every program you start from it inherits the variable. This runbook does not use
+   `vastai set api-key KEY` or `--api-key KEY`, because both put the key in the command's argument list, which every user
+   of the machine can read through `/proc/PID/cmdline` (mode 0444 on this machine, checked with
+   `ls -l /proc/self/cmdline`) while the command runs. A process's environment file, `/proc/PID/environ`, is mode 0400
+   here, readable by its owner and root. The CLI reads `VAST_API_KEY` when no `--api-key` is given: I read the default of
+   `--api-key` in `vast.py` of vast-ai/vast-cli at commit `4727235e75470ab26b231c1bdb1415f6ca815d1d`
+   (`os.getenv("VAST_API_KEY", ...)`), and the Context7 documentation of `/vast-ai/vast-cli` gives the same order
+   (explicit argument, then `VAST_API_KEY`, then the key file), both on 2026-11-09. I have not run the CLI, and I did not
+   check which version `uv tool install vastai` installs. If your version ignores the variable, the first call fails
+   with an authentication error and nothing is stored.
+
+   This touches `~/.ssh/vast_dgemma*` and your account's key list (the CLI also creates `~/.config/vastai`). To undo it,
+   close the shell, delete `~/.ssh/vast_dgemma*` and remove the SSH key in the Vast.ai console, and revoke the API key
+   there if you made it for this run. I have not run `vastai create ssh-key` here; check it with
    `vastai create ssh-key --help`.
 
 2. **Find an offer.** Filter by card, reliability, disk, download speed and driver. The field names come from the
