@@ -143,14 +143,14 @@ The script also refuses to start a job in two cases:
 - The systemd user manager cannot enforce a memory limit (no cgroup v2, or the `memory` controller is not
   delegated to it). It never runs the command uncapped. Exit status 69.
 
-The test suite checks the limits the kernel reports for a capped scope (`memory.max`, `memory.swap.max`,
-`memory.oom.group`). The test that kills a process at its cap runs only with `CAPPED_TEST_KILL=1`, because GNOME's
-`gsd-housekeeping` answers every such kill with an "Application Stopped" notification.
-
 `--dry-run` runs both checks and prints the `systemd-run` command without running it. When a capped job dies with
 exit status 137, the cap was most likely reached; `journalctl -k | grep oom-kill` tells the cases apart:
 `constraint=CONSTRAINT_MEMCG` is the cap working, while `constraint=CONSTRAINT_NONE` with `global_oom` means the
 whole machine ran out of memory.
+
+The test suite checks the limits the kernel reports for a capped scope (`memory.max`, `memory.swap.max`,
+`memory.oom.group`). The test that kills a process at its cap runs only with `CAPPED_TEST_KILL=1`, because GNOME's
+`gsd-housekeeping` answers every such kill with an "Application Stopped" notification.
 
 For a container, set the same two limits on the container: `podman run --memory 12g --memory-swap 12g`
 (`--memory-swap` counts memory plus swap, so equal values mean no swap).

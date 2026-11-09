@@ -1,7 +1,7 @@
 """scripts/capped.sh runs a command in its own memory-capped systemd scope, or refuses to run it.
 
 The first tests never start systemd: they source the script's functions, or run it with `--dry-run`, or put a
-stub `systemd-run` first on PATH. The last two tests start a real scope and run only where the user manager
+stub `systemd-run` first on PATH. The tests marked `REAL` start a real scope and run only where the user manager
 can enforce memory limits.
 """
 
@@ -346,7 +346,7 @@ def test_the_scope_carries_the_cap_the_swap_limit_and_the_group_kill(tmp_path: P
 
 @REAL
 def test_a_cap_given_in_gigabytes_reaches_the_kernel(tmp_path: Path) -> None:
-    out = subprocess.run([BASH, str(SCRIPT), "--mem", "3G", "--", sys.executable, "-I", "-c", LIMITS],
+    out = subprocess.run([BASH, str(SCRIPT), "--mem", "3G", "--need", "64M", "--", sys.executable, "-I", "-c", LIMITS],
                          capture_output=True, text=True, timeout=120, check=False)
     assert out.returncode == 0, out.stderr
     assert dict(line.split(" ", 1) for line in out.stdout.strip().splitlines())["memory.max"] == str(3 * 1024**3)
