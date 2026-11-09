@@ -948,6 +948,17 @@ def _generate_diffusion_gemma[
     """
     if cfg.gen_length <= 0:
         raise Error("generation length must be positive")
+    if cfg.gen_length != model.config().canvas:
+        # The model scores [prompt | canvas] with the canvas it declares and
+        # writes that many logits rows: a different length overflows the
+        # buffer or moves the prompt boundary.
+        raise Error(
+            "generation length "
+            + String(cfg.gen_length)
+            + " must equal the model's canvas length "
+            + String(model.config().canvas)
+            + " (diffusion.canvas_length)"
+        )
     if cfg.eb_steps < 1:
         raise _eb_flag_error(
             "eb-steps", "must be at least 1", String(cfg.eb_steps)

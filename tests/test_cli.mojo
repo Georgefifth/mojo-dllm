@@ -1318,6 +1318,34 @@ def test_run_refuses_a_generation_length_that_overflows_the_allocations() raises
         cmd_run(b)
 
 
+def test_run_refuses_a_diffusion_gemma_file_before_the_tokenizer_is_built() raises:
+    # The tiny file has no tokenizer: any error about one would mean the
+    # parse work started before the architecture was refused.
+    var spec = command_spec("run")
+    var a = Args(
+        ["x", "run", "--model", DG_TINY, "--prompt", "hi"],
+        spec.values,
+        spec.booleans,
+    )
+    with assert_raises(
+        contains=(
+            "diffusion-gemma does not run on this model: `run` waits for the"
+            " generation loop (#64), so use `logits` (CPU) until then"
+        )
+    ):
+        cmd_run(a)
+
+
+def test_run_help_says_the_entropy_bound_flags_have_no_effect_yet() raises:
+    var text = usage_for("run")
+    assert_true(
+        text.__contains__(
+            "the eb-* flags have no effect until run accepts"
+            " diffusion-gemma (#64)"
+        )
+    )
+
+
 def test_the_context_length_bound_is_exact() raises:
     check_context_length(10, 4086, 4096, "llada")  # 4096 tokens fit
     with assert_raises(

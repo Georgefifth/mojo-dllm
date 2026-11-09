@@ -292,7 +292,13 @@ struct ModelConfig(Copyable, ImplicitlyCopyable, Movable):
         return self.theta
 
     def check_runnable(self) raises:
-        """Refuses a config the loaders can read but no forward pass runs."""
+        """Refuses a config `DiffusionLM` and `GpuDiffusionLM` cannot run.
+
+        DiffusionGemma has a forward pass of its own (`DiffusionGemma` in
+        models/diffusion_gemma.mojo, which `logits` drives on the CPU), but it
+        does not implement `DenoisingModel`, so `run` cannot use it until the
+        generation loop is wired to it (#64).
+        """
         if self.arch == GEMMA_ARCH:
             raise Error(
                 GEMMA_ARCH

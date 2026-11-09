@@ -174,6 +174,12 @@ semantic versioning (0.y: minor bumps may break things).
 
 ### Changed
 
+- `run` refuses a DiffusionGemma file as soon as its header is read, before the tokenizer is built and the prompt
+  encoded, and says that the architecture runs through `logits` only until the generation loop is wired (issue #205,
+  wiring stays in #64). `run --help` and `docs/cli.md` mark the `--eb-*` flags as having no effect yet. The
+  entropy-bounded sampler also refuses a generation length that differs from the model's canvas length, which
+  overflowed the logits buffer when smaller and moved the prompt boundary otherwise. The `check_runnable` docstring no
+  longer says that no forward pass exists.
 - The LLaDA and Dream loops stop with `non-finite logits at canvas position P, step S` when a row's softmax is not a
   number, on the CPU and the GPU statistics path (issue #196). A single Q4_K block with an f16 scale of NaN used to
   give a canvas of token 0 repeated, stop reason `complete` and exit status 0. The GPU kernel's tie and NaN rule is

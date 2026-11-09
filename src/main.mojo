@@ -138,7 +138,9 @@ def command_usage(command: String) raises -> String:
             " [--dump-step-stats] [--json]\n"
             + "                [--eb-steps 48] [--eb-t-min 0.4] [--eb-t-max"
             " 0.8] [--eb-bound 0.1]\n"
-            + "                [--eb-stability 1] [--eb-confidence 0.005]"
+            + "                [--eb-stability 1] [--eb-confidence 0.005]\n"
+            + "                (the eb-* flags have no effect until run accepts"
+            " diffusion-gemma (#64))"
         )
     if command == "tokenize":
         return "  mojo-dllm tokenize --model M --prompt TEXT [--no-chat]"
@@ -678,8 +680,14 @@ def cmd_run(a: Args) raises:
     var t0 = perf_counter_ns()
     var g = GGUFFile(a.get("model"))
     check_arch_flags(a, g.architecture())
-    if g.architecture() == "diffusion-gemma":
-        cfg.steps = cfg.eb_steps
+    if g.architecture() == GEMMA_ARCH:
+        # Before the tokenizer, the prompt and the model: DiffusionGemma has no
+        # DenoisingModel yet, so no work done here could end in a run.
+        raise Error(
+            GEMMA_ARCH
+            + " does not run on this model: `run` waits for the generation"
+            " loop (#64), so use `logits` (CPU) until then"
+        )
     var tok = Tokenizer(g)
     check_tokenizer_matches_model(g, tok)
     var prompt = encode_prompt(tok, g.architecture(), a)

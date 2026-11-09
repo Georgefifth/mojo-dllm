@@ -59,6 +59,7 @@ struct ScriptedModel(DenoisingModel, Movable):
         self.cfg.vocab = vocab
         self.cfg.shift_logits = False
         self.cfg.mask_id = 4
+        self.cfg.canvas = len(script[0]) // vocab if len(script) > 0 else 0
         self.script = script^
         self.seen = List[List[Int]]()
         self.asked = List[List[Int]]()
@@ -476,6 +477,29 @@ def test_run_stops_at_step_two_when_stable_and_confident() raises:
     _same(obs.totals, [48, 48], "observer total is the step budget")
     _same(res.tokens, [1, 2, 3, 1, 5], "the output is prompt + argmax canvas")
     assert_equal(len(m.seen), 2)
+
+
+def test_the_canvas_must_match_the_models_canvas_length() raises:
+    # The model scores [prompt | canvas] with the canvas it declares; a
+    # generation length that differs would overflow its logits buffer or move
+    # the prompt boundary.
+    var vocab = 6
+    var step = _step(_one_hot(vocab, 3), _one_hot(vocab, 1), _one_hot(vocab, 5))
+    var m = ScriptedModel(vocab, [step.copy()])
+    var prompt: List[Int] = [1, 2]
+    for bad in List[Int]([2, 4]):
+        var obs = Accepted(len(prompt))
+        with assert_raises(
+            contains=(
+                "generation length "
+                + String(bad)
+                + " must equal the model's canvas length 3"
+            )
+        ):
+            _ = _generate_diffusion_gemma(m, prompt, _cfg(bad), obs)
+    assert_equal(len(m.seen), 0)
+    var ok = Accepted(len(prompt))
+    _ = _generate_diffusion_gemma(m, prompt, _cfg(3), ok)
 
 
 def test_run_does_not_stop_when_stable_but_not_confident() raises:
