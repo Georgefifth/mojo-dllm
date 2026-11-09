@@ -35,10 +35,12 @@ import pathlib
 import platform
 import shutil
 import signal
+import stat
 import subprocess
 import sys
 import threading
 import time
+import uuid
 from typing import Any, Callable, Iterator, TypeVar
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -56,7 +58,6 @@ GPU_UTIL_MAX = 5.0                 # percent, mean of three samples
 WINDOW_SAMPLE_S = 0.5
 OTHER_CPU_MEAN_MAX = 0.05          # share of total machine capacity used by processes outside the benchmark tree
 OTHER_CPU_SAMPLE_MAX = 0.25        # the same, in any single 0.5 s sample
-PSI_STALL_MAX = 0.02               # PSI cpu "some" stall time, as a share of the window (total= is in microseconds)
 SWAP_PAGES_MAX = 0                 # pages swapped in or out during the window
 THERMAL_EVENTS_MAX = 0             # core + package throttle counter steps during the window
 FOREIGN_GPU_PIDS_MAX = 0           # GPU compute processes that are not in the benchmark tree
@@ -68,7 +69,9 @@ GPU_REASONS = {0x1: "idle", 0x2: "applications_clocks", 0x4: "sw_power_cap", 0x8
                0x100: "display_clock"}
 GPU_REASON_IDLE = 0x1
 GPU_REASON_DISPLAY = 0x100         # a display clock setting says nothing about contention: recorded only
-GPU_REASONS_IGNORED = GPU_REASON_IDLE | GPU_REASON_DISPLAY
+GPU_REASON_POWER_CAP = 0x4         # a software power cap is intrinsic on a 30 W laptop GPU: recorded, not noisy
+GPU_REASONS_IGNORED = GPU_REASON_IDLE | GPU_REASON_DISPLAY | GPU_REASON_POWER_CAP
+GPU_SAMPLE_S = 2.0                 # the GPU is read this often inside a window (two nvidia-smi processes per read)
 TIMERS = ("sysstat-collect", "apt-daily", "apt-daily-upgrade", "fwupd-refresh", "anacron", "man-db", "motd-news")
 
 
@@ -82,7 +85,6 @@ class Thresholds:
     gpu_util_max: float = GPU_UTIL_MAX
     other_cpu_mean_max: float = OTHER_CPU_MEAN_MAX
     other_cpu_sample_max: float = OTHER_CPU_SAMPLE_MAX
-    psi_stall_max: float = PSI_STALL_MAX
     swap_pages_max: int = SWAP_PAGES_MAX
     thermal_events_max: int = THERMAL_EVENTS_MAX
     foreign_gpu_pids_max: int = FOREIGN_GPU_PIDS_MAX
@@ -259,8 +261,11 @@ def read_text(m: Machine, path: pathlib.Path) -> str | None:
     return text.strip() if text else None
 
 
-def process_table(m: Machine) -> dict[int, tuple[int, int, str]] | None:
-    """{pid: (ppid, utime + stime in ticks, name)} for every process, or None when /proc cannot be listed."""
+def process_table(m: Machine) -> dict[int, tuple[int, int, str, int]] | None:
+    """{pid: (ppid, utime + stime, name, cutime + cstime)} in ticks for every process, or None when /proc cannot be listed.
+
+    cutime and cstime are the time of children the process has waited for: when a child exits and is reaped, its
+    ticks leave the table as a process and arrive here, so a tree's total does not lose them."""
     try:
         names = [n for n in os.listdir(m.proc) if n.isdigit()]
     except OSError:
@@ -272,21 +277,22 @@ def process_table(m: Machine) -> dict[int, tuple[int, int, str]] | None:
             continue    # the process ended between the listing and the read
         head, _, tail = text.rpartition(")")
         parts = tail.split()
-        if not head or len(parts) < 13:
+        if not head or len(parts) < 15:
             continue
         try:
-            table[int(n)] = (int(parts[1]), int(parts[11]) + int(parts[12]), head.partition("(")[2])
+            table[int(n)] = (int(parts[1]), int(parts[11]) + int(parts[12]), head.partition("(")[2],
+                             int(parts[13]) + int(parts[14]))
         except ValueError:
             continue
     return table
 
 
-def tree_of(table: dict[int, tuple[int, int, str]], root: int) -> set[int]:
+def tree_of(table: dict[int, tuple[int, int, str, int]], root: int) -> set[int]:
     """`root` and its descendants, by parent pid. Empty when `root` is not in the table."""
     if root not in table:
         return set()
     children: dict[int, list[int]] = {}
-    for pid, (ppid, _, _) in table.items():
+    for pid, (ppid, *_) in table.items():
         children.setdefault(ppid, []).append(pid)
     out, todo = {root}, [root]
     while todo:
@@ -366,7 +372,8 @@ def reason_names(bits: int) -> list[str]:
 
 
 def contended_reasons(bits: int | None) -> list[str]:
-    """The event reasons that count against a run: everything but idle and the display clock setting."""
+    """The event reasons that count against a run: everything but idle, the display clock setting and a software
+    power cap, which are recorded (`gpu_power_capped`) and nothing else."""
     return reason_names((bits or 0) & ~GPU_REASONS_IGNORED)
 
 
@@ -379,7 +386,7 @@ def top_processes(before: dict, after: dict, dt_s: float, tck: int, skip: set[in
     if dt_s <= 0:
         return []
     rows = []
-    for pid, (_, ticks, name) in after.items():
+    for pid, (_, ticks, name, _c) in after.items():
         if pid in skip:
             continue
         used = ticks - before[pid][1] if pid in before else ticks
@@ -584,7 +591,7 @@ def _governor_check(m: Machine) -> Check:
                  f"intel_pstate {status or 'unreadable'}: not performance")
 
 
-def preflight(device: str, need_ram_gb: float, allow: tuple[str, ...] = (), *, machine: Machine | None = None,
+def preflight(device: str, need_ram_gb: float | None, allow: tuple[str, ...] = (), *, machine: Machine | None = None,
               thresholds: Thresholds | None = None, sample_s: float = PREFLIGHT_SAMPLE_S,
               allow_battery: bool = False) -> Report:
     """Check the machine before an arm. Never raises on a missing source: it is a WARN naming the source.
@@ -662,9 +669,13 @@ def preflight(device: str, need_ram_gb: float, allow: tuple[str, ...] = (), *, m
         warn("memory", f"{m.proc}/meminfo")
     else:
         avail_gb = mem["MemAvailable"] / 1048576
-        low = avail_gb < need_ram_gb
-        checks.append(Check("memory", "FAIL" if low else "PASS",
-                            f"MemAvailable {avail_gb:.1f} GB, need {need_ram_gb:.1f} GB"))
+        if need_ram_gb is None:
+            checks.append(Check("memory", "FAIL", f"cannot read the model file size, so the memory need is unknown "
+                                f"(MemAvailable {avail_gb:.1f} GB)"))
+        else:
+            low = avail_gb < need_ram_gb
+            checks.append(Check("memory", "FAIL" if low else "PASS",
+                                f"MemAvailable {avail_gb:.1f} GB, need {need_ram_gb:.1f} GB"))
         used_mb = (mem["SwapTotal"] - mem["SwapFree"]) // 1024
         if used_mb > 0:
             checks.append(Check("swap-in-use", "WARN", f"{used_mb} of {mem['SwapTotal'] // 1024} MB swap used: "
@@ -750,7 +761,7 @@ def wait_for_quiet(threshold: float, max_wait: float, *, machine: Machine | None
 
 def quiet_gate(device: str, *, machine: Machine | None = None, thresholds: Thresholds | None = None,
                max_wait_s: float = 60.0, sample_s: float = 1.0, poll_s: float = 3.0) -> dict:
-    """The preflight's dynamic checks over a short sample, repeated until they pass or `max_wait_s` has gone.
+    """The preflight's dynamic checks (CPU busy, swap movement, GPU processes; not PSI, which a 12-thread run raises by itself) over a short sample, repeated until they pass or `max_wait_s` has gone.
 
     Returns {"ok", "cpu_busy_before", "waited_s", "reasons"}; a gate that times out lets the problem run, and the
     window then decides whether it was clean."""
@@ -758,10 +769,10 @@ def quiet_gate(device: str, *, machine: Machine | None = None, thresholds: Thres
     t0 = m.clock()
     while True:
         reasons: list[str] = []
-        c0, p0, s0 = read_cpu_stat(m), read_psi(m, "cpu"), read_swap_pages(m)
+        c0, s0 = read_cpu_stat(m), read_swap_pages(m)
         g0 = read_gpu_apps(m) if device == "gpu" else []
         m.sleep(sample_s)
-        c1, p1, s1 = read_cpu_stat(m), read_psi(m, "cpu"), read_swap_pages(m)
+        c1, s1 = read_cpu_stat(m), read_swap_pages(m)
         if c0 is None or c1 is None or c1[0] - c0[0] <= 0:
             busy = 1.0
             reasons.append("cpu-busy unmeasured")
@@ -769,10 +780,6 @@ def quiet_gate(device: str, *, machine: Machine | None = None, thresholds: Thres
             busy = (c1[1] - c0[1]) / (c1[0] - c0[0])
             if busy > th.cpu_busy_max:
                 reasons.append(f"cpu-busy {busy:.1%}")
-        if p1 is None:
-            reasons.append("psi-cpu unmeasured")
-        elif p1["avg10"] > th.psi_avg10_max:
-            reasons.append(f"psi-cpu avg10 {p1['avg10']:.2f}%")
         if s0 is None or s1 is None:
             reasons.append("swap unmeasured")
         elif sum(s1.values()) - sum(s0.values()) > th.swap_pages_max:
@@ -822,24 +829,30 @@ class Window:
         self._thread: threading.Thread | None = None
         self._t0 = 0.0
 
-    def _read(self) -> dict:
+    def _read(self, gpu_read: bool) -> dict:
         m = self.m
         table = process_table(m)
         members = set() if table is None else tree_of(table, self.pid)
-        tree = None if table is None else {p: table[p][1] for p in members}
+        # a tree member's ticks plus what its waited-for children left: an exiting child moves from one to the other
+        tree = None if table is None else {p: table[p][1] + table[p][3] for p in members}
         r: dict[str, Any] = {"t": m.clock(), "cpu": read_cpu_stat(m), "psi": read_psi(m, "cpu"),
+                             "psim": read_psi(m, "memory"),
                              "others": {} if table is None else {p: (v[1], v[2]) for p, v in table.items()
                                                                  if p not in members},
                              "swap": read_swap_pages(m), "thermal": read_thermal(m), "tree": tree,
                              "gpu": None, "apps": None}
-        if self.device == "gpu":
+        r["gpu_due"] = False
+        if self.device == "gpu" and gpu_read:
+            r["gpu_due"] = True
             r["gpu"] = read_gpu(m, GPU_WINDOW_FIELDS)
             apps = read_gpu_apps(m)
             r["apps"] = None if apps is None else [p for p, _ in apps]
         return r
 
-    def tick(self) -> None:
-        self.readings.append(self._read())
+    def tick(self, final: bool = False) -> None:
+        """One reading. The GPU is read on the first, every `GPU_SAMPLE_S` seconds and on the last one."""
+        every = max(1, round(GPU_SAMPLE_S / self.sample_s))
+        self.readings.append(self._read(final or len(self.readings) % every == 0))
 
     def _loop(self) -> None:
         try:
@@ -863,7 +876,7 @@ class Window:
             self.stuck = self._thread.is_alive()
         if self.error is None and not self.stuck:
             try:
-                self.tick()
+                self.tick(final=True)
             except BaseException as e:  # noqa: BLE001
                 self.error = e
         self.result = self._evaluate()
@@ -911,7 +924,9 @@ class Window:
             d_total, d_busy = b["cpu"][0] - a["cpu"][0], b["cpu"][1] - a["cpu"][1]
             if d_total <= 0:
                 continue    # no ticks elapsed: a zero would be a guess
-            d_tree = sum(max(t - a["tree"].get(p, 0), 0) for p, t in b["tree"].items())
+            # Aggregate difference: a child that exited between the two readings left its ticks in its parent's
+            # waited-for time, so the sum does not drop. Per-pid differences would lose them.
+            d_tree = max(sum(b["tree"].values()) - sum(a["tree"].values()), 0)
             other = max(d_busy - d_tree, 0)
             shares.append(other / d_total)
             other_ticks += other
@@ -935,10 +950,13 @@ class Window:
 
         psi = counter("psi", lambda x: x["total"])
         psi_ms = psi / 1000 if psi is not None else None
-        if psi_ms is None:
-            lost("psi-cpu")
-        elif window_s > 0 and psi_ms > th.psi_stall_max * window_s * 1000:
-            reasons.append(f"psi-cpu-stall {psi_ms:.0f} ms of {window_s * 1000:.0f} ms")
+        psim = counter("psim", lambda x: x["total"])
+        psim_ms = psim / 1000 if psim is not None else None
+        # PSI is recorded, not judged: a 12-thread run stalls about 9% of the time by itself, so no limit
+        # separates the run from a neighbour. A missing PSI file is listed as unavailable and nothing more.
+        for name, val in (("psi-cpu", psi_ms), ("psi-memory", psim_ms)):
+            if val is None:
+                unavailable.append(name)
         swap = counter("swap", lambda x: x["pswpin"] + x["pswpout"])
         if swap is None:
             lost("vmstat")
@@ -951,35 +969,40 @@ class Window:
             reasons.append(f"thermal {thermal:.0f} throttle events")
 
         reasons_seen: list[str] = []
+        contended: list[str] = []
         foreign: list[int] = []
         clocks: list[float] = []
+        capped = False
         if self.device == "gpu":
-            gpu_ok = all(r["gpu"] is not None and r["gpu"]["reasons"] is not None and r["apps"] is not None
-                         for r in rs) and bool(rs)
+            due = [r for r in rs if r["gpu_due"]]        # the GPU is read every GPU_SAMPLE_S, not on every tick
+            gpu_ok = bool(due) and all(r["gpu"] is not None and r["gpu"]["reasons"] is not None
+                                       and r["apps"] is not None for r in due)
             if not gpu_ok:
                 lost("gpu")
-            for r in rs:
-                if r["gpu"] is not None and r["gpu"]["reasons"] is not None:
-                    for n in contended_reasons(r["gpu"]["reasons"]):
+            for r in due:
+                bits = None if r["gpu"] is None else r["gpu"]["reasons"]
+                if bits is not None:
+                    for n in reason_names(bits & ~GPU_REASON_IDLE):
                         if n not in reasons_seen:
                             reasons_seen.append(n)
-                    if r["gpu"]["reasons"] & GPU_REASON_DISPLAY and "display_clock" not in reasons_seen:
-                        reasons_seen.append("display_clock")
+                    capped = capped or bool(bits & GPU_REASON_POWER_CAP)
+                    for n in contended_reasons(bits):
+                        if n not in contended:
+                            contended.append(n)
                 clk = _num((r["gpu"] or {}).get("clocks.sm"))
                 if clk is not None:
                     clocks.append(clk)
                 if r["apps"] is not None and r["tree"] is not None:
                     foreign += [p for p in r["apps"] if p not in r["tree"] and p not in foreign]
-            contended = [n for n in reasons_seen if n != "display_clock"]
             if contended:
                 reasons.append(f"gpu-clock-reasons {contended}")
             if len(foreign) > th.foreign_gpu_pids_max:
                 reasons.append(f"gpu-foreign-pids {foreign}")
 
         return {"clean": not reasons, "reasons": reasons, "other_cpu_share_max": share_max,
-                "other_top_processes": self._top_others(window_s),
+                "other_top_processes": self._top_others(window_s), "psi_memory_stall_ms": psim_ms,
                 "other_cpu_share_mean": share_mean, "psi_cpu_stall_ms": psi_ms, "swap_pages": swap,
-                "thermal_events": thermal, "gpu_reasons_seen": reasons_seen, "gpu_foreign_pids": foreign,
+                "thermal_events": thermal, "gpu_reasons_seen": reasons_seen, "gpu_power_capped": capped, "gpu_foreign_pids": foreign,
                 "sm_clock_min_mhz": min(clocks) if clocks else None,
                 "sm_clock_max_mhz": max(clocks) if clocks else None, "window_s": round(window_s, 3),
                 "samples": len(rs), "unavailable": unavailable}
@@ -1014,6 +1037,7 @@ class Arm:
     allow_noisy: bool = False
     tuned: dict | None = None
     log: Callable[[str], None] = print
+    session_id: str = ""
 
     def run(self, fn: Callable[[], T], **kw: Any) -> tuple[T, dict]:
         return run_isolated(fn, device=self.device, retries=self.retries, arm=self,
@@ -1028,7 +1052,7 @@ class Arm:
         self.env_path.write_text(json.dumps(doc, indent=2) + "\n")
 
 
-def begin_arm(arm: str, *, device: str, need_ram_gb: float, runs_dir: pathlib.Path | None,
+def begin_arm(arm: str, *, device: str, need_ram_gb: float | None, runs_dir: pathlib.Path | None,
               machine: Machine | None = None, thresholds: Thresholds | None = None, retries: int = 2,
               allow_noisy: bool = False, allow_battery: bool = False, allow: tuple[str, ...] = (),
               tuned: dict | None = None, versions: dict | None = None, log: Callable[[str], None] = print,
@@ -1038,6 +1062,7 @@ def begin_arm(arm: str, *, device: str, need_ram_gb: float, runs_dir: pathlib.Pa
     Raises IsolationError, with the report, when a check FAILs and `allow_noisy` is not set. With it, the run
     goes on and the file records `preflight_failed_allowed: true`. A resumed arm appends a session."""
     m, th = machine or get_machine(), thresholds or Thresholds()
+    session_id = uuid.uuid4().hex[:12]
     report = preflight(device, need_ram_gb, allow, machine=m, thresholds=th, sample_s=sample_s,
                        allow_battery=allow_battery)
     log(report.text())
@@ -1050,7 +1075,7 @@ def begin_arm(arm: str, *, device: str, need_ram_gb: float, runs_dir: pathlib.Pa
         except ValueError as e:
             raise IsolationError(f"{env_path} is not valid JSON ({e}); move it aside to start a new record") from e
         doc["sessions"].append({
-            "started": dt.datetime.fromtimestamp(m.wall()).isoformat(timespec="seconds"), "device": device,
+            "session_id": session_id, "started": dt.datetime.fromtimestamp(m.wall()).isoformat(timespec="seconds"), "device": device,
             "preflight": report.to_dict(), "preflight_failed_allowed": bool(report.failed) and allow_noisy,
             "allow_noisy": allow_noisy, "allow_battery": allow_battery,
             "bench_quiet": os.environ.get("BENCH_QUIET_ACTIVE") == "1", "retries": retries,
@@ -1061,7 +1086,7 @@ def begin_arm(arm: str, *, device: str, need_ram_gb: float, runs_dir: pathlib.Pa
         raise IsolationError("the machine is not fit for a timed run:\n" + report.text() +
                              "\nfix the offenders, use --tune for the power profile, or continue with --allow-noisy "
                              "(every row then records its window)")
-    return Arm(arm, device, report, th, env_path, m, retries, allow_battery, allow_noisy, tuned, log)
+    return Arm(arm, device, report, th, env_path, m, retries, allow_battery, allow_noisy, tuned, log, session_id)
 
 
 def run_isolated(fn: Callable[[], T], *, device: str, retries: int = 2, arm: Arm | None = None,
@@ -1102,16 +1127,25 @@ def run_isolated(fn: Callable[[], T], *, device: str, retries: int = 2, arm: Arm
         attempts += 1
         log(f"noisy window ({'; '.join(win['reasons'])}): repeating, {attempts} of {retries}")
     iso = {**win, "retries": attempts, "noisy": not win["clean"], "cpu_busy_before": gate["cpu_busy_before"],
-           "waited_s": gate["waited_s"], "gate_ok": gate["ok"]}
+           "waited_s": gate["waited_s"], "gate_ok": gate["ok"],
+           # which start of the arm wrote this row, and whether that start went on past a failed preflight
+           "session": arm.session_id if arm else None, "allow_noisy": bool(arm and arm.allow_noisy),
+           "preflight_failed_allowed": bool(arm and arm.allow_noisy and arm.report.failed)}
     return result, {**pinfo, "isolation": iso}
 
 
-def need_ram_gb(model: str | os.PathLike) -> float:
-    """Free memory an arm wants: RAM_FACTOR times the model file (llama.cpp's resident set is 1.4 times the file)."""
+def need_ram_gb(model: str | os.PathLike) -> float | None:
+    """Free memory an arm wants: RAM_FACTOR times the model file (llama.cpp's resident set is 1.4 times the file).
+
+    None when the size cannot be read (missing, unreadable, not a regular file): the preflight then FAILs
+    `memory`, it never reads the need as zero."""
     try:
-        return round(os.stat(model).st_size / 1e9 * RAM_FACTOR, 2)
+        st = os.stat(model)
     except OSError:
-        return 0.0
+        return None
+    if not stat.S_ISREG(st.st_mode):
+        return None
+    return round(st.st_size / 1e9 * RAM_FACTOR, 2)
 
 
 # --tune: the power profile without root

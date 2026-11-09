@@ -20,9 +20,15 @@
 # it restored.
 #
 # Test seams (environment, all optional):
-#   BENCH_QUIET_ASSUME_ROOT=1   skip the "must be root" check. Tests set it with fake systemctl and nvidia-smi
-#                               on PATH; do not set it on a real machine.
+#   BENCH_QUIET_ASSUME_ROOT=1   skip the "must be root" check, but only when BENCH_QUIET_TESTING=1 is set too,
+#                               so one stray variable cannot turn the guard off. Tests set both, with fake
+#                               systemctl and nvidia-smi on PATH; do not set either on a real machine.
+#   BENCH_QUIET_TESTING=1       the second half of the seam above
 #   BENCH_QUIET_STATE=PATH      the state file (default /run/bench-quiet.state)
+#
+# After a SIGKILL or a power loss nothing can run a trap: run `sudo scripts/bench-quiet.sh --restore`. The
+# runners' `--tune` has no state file, so after a SIGKILL the power profile stays at performance: put back the
+# profile the arm recorded (`tuned.previous` in ARM.env.json) with `powerprofilesctl set <previous>`.
 set -uo pipefail
 
 TIMERS=(sysstat-collect apt-daily apt-daily-upgrade fwupd-refresh anacron man-db motd-news)
@@ -31,7 +37,7 @@ STATE="${BENCH_QUIET_STATE:-/run/bench-quiet.state}"
 say() { printf 'bench-quiet: %s\n' "$*"; }
 err() { printf 'bench-quiet: %s\n' "$*" >&2; }
 
-if [ "${BENCH_QUIET_ASSUME_ROOT:-}" != 1 ] && [ "$(id -u)" != 0 ]; then
+if { [ "${BENCH_QUIET_ASSUME_ROOT:-}" != 1 ] || [ "${BENCH_QUIET_TESTING:-}" != 1 ]; } && [ "$(id -u)" != 0 ]; then
     err "must run as root: sudo $0 -- COMMAND ..."
     exit 2
 fi
@@ -40,7 +46,7 @@ mode=run
 case "${1:-}" in
     --restore) mode=restore; shift ;;
     --) shift ;;
-    -h | --help) sed -n '2,24p' "$0"; exit 0 ;;
+    -h | --help) sed -n '2,/^set -uo pipefail/p' "$0" | sed '$d'; exit 0 ;;
     *) err "usage: $0 -- COMMAND [ARGS...]   |   $0 --restore"; exit 2 ;;
 esac
 if [ "$mode" = run ] && [ "$#" -eq 0 ]; then

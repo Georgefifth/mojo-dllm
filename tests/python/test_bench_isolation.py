@@ -197,9 +197,14 @@ def test_fail_on_gpu_utilization(fake_machine: FakeMachine) -> None:
 
 
 def test_fail_on_a_gpu_event_reason_other_than_idle(fake_machine: FakeMachine) -> None:
-    fake_machine.gpu["reasons"] = 0x4 | 0x1
+    fake_machine.gpu["reasons"] = 0x20 | 0x1
     rep = pre(fake_machine, "gpu")
-    assert [c.name for c in rep.failed] == ["gpu-clock-reasons"] and "sw_power_cap" in detail(rep, "gpu-clock-reasons")
+    assert [c.name for c in rep.failed] == ["gpu-clock-reasons"] and "sw_thermal" in detail(rep, "gpu-clock-reasons")
+
+
+def test_a_software_power_cap_alone_is_recorded_not_a_failure(fake_machine: FakeMachine) -> None:
+    fake_machine.gpu["reasons"] = 0x4 | 0x1                  # intrinsic on a 30 W laptop GPU
+    assert pre(fake_machine, "gpu").ok
 
 
 def test_a_display_clock_setting_alone_is_not_a_failure(fake_machine: FakeMachine) -> None:
@@ -294,6 +299,13 @@ def test_snapshot_names_the_sources_it_could_not_read(tmp_path: Path) -> None:
 # the real command runner against fake scripts on a temporary PATH
 
 
+def _default_signals() -> None:
+    """A job started from a background shell or under nohup inherits SIGINT or SIGHUP ignored; the child under
+    test must start with the default dispositions."""
+    for sig in (signal.SIGINT, signal.SIGHUP, signal.SIGQUIT, signal.SIGTERM):
+        signal.signal(sig, signal.SIG_DFL)
+
+
 def _script(path: Path, body: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(body)
@@ -330,7 +342,7 @@ def test_gpu_reader_falls_back_to_the_old_reasons_field(tmp_path: Path) -> None:
     m = isolation.Machine(env={"PATH": f"{tmp_path / 'bin'}{os.pathsep}/usr/bin:/bin"})
     row = isolation.read_gpu(m)
     assert row is not None and row["reasons"] == 0x44 and row["utilization.gpu"] == "97"
-    assert isolation.contended_reasons(row["reasons"]) == ["sw_power_cap", "hw_thermal"]
+    assert isolation.contended_reasons(row["reasons"]) == ["hw_thermal"]            # the software power cap is recorded elsewhere, not contended
     assert isolation.read_gpu_apps(m) == [(4001, 300.0), (4002, 20.0)]
 
 
@@ -406,17 +418,24 @@ def test_a_short_spike_trips_the_peak_but_not_the_mean(fake_machine: FakeMachine
     assert res["other_cpu_share_max"] == pytest.approx(0.35) and res["other_cpu_share_mean"] < 0.05
 
 
-def test_psi_stall_above_two_percent_of_the_window_flags_it(fake_machine: FakeMachine) -> None:
-    fake_machine.psi_rate = 0.03
+def test_psi_stall_is_recorded_but_never_makes_the_window_noisy(fake_machine: FakeMachine) -> None:
+    """A 12-thread run stalls 9% of the time by itself (measured), so PSI cannot tell contention from the run."""
+    fake_machine.psi_rate = 0.30                              # 30% of the window: far above any old limit
     res = window(fake_machine)
-    assert res["clean"] is False and res["psi_cpu_stall_ms"] == pytest.approx(150.0)
-    assert [r.split()[0] for r in res["reasons"]] == ["psi-cpu-stall"]
+    assert res["clean"] is True, res
+    assert res["psi_cpu_stall_ms"] == pytest.approx(1500.0) and res["reasons"] == []
 
 
-def test_psi_stall_below_two_percent_is_clean(fake_machine: FakeMachine) -> None:
-    fake_machine.psi_rate = 0.01
+def test_psi_memory_stall_is_recorded_only(fake_machine: FakeMachine) -> None:
+    fake_machine.psi_mem_rate = 0.2
     res = window(fake_machine)
-    assert res["clean"] is True and res["psi_cpu_stall_ms"] == pytest.approx(50.0)
+    assert res["clean"] is True and res["psi_memory_stall_ms"] == pytest.approx(1000.0)
+
+
+def test_the_quiet_gate_does_not_wait_on_pressure_averages(fake_machine: FakeMachine) -> None:
+    fake_machine.psi_avg10 = 9.0                              # the avg10 decays for seconds after a 12-thread problem
+    g = isolation.quiet_gate("cpu", machine=fake_machine, sample_s=1.0, max_wait_s=0)
+    assert g["ok"] is True and g["reasons"] == []
 
 
 def test_one_swapped_page_flags_the_window(fake_machine: FakeMachine) -> None:
@@ -433,10 +452,10 @@ def test_a_thermal_counter_step_flags_the_window(fake_machine: FakeMachine) -> N
 
 def test_gpu_reason_other_than_idle_flags_and_is_recorded(fake_machine: FakeMachine) -> None:
     def power_cap(i: int) -> None:
-        fake_machine.gpu["reasons"] = 0x5 if i == 6 else 0x1
-        fake_machine.gpu["sm"] = 900 if i == 6 else 1900
+        fake_machine.gpu["reasons"] = 0x21 if i == 7 else 0x1       # reading 8 is a GPU sample (every 2 s)
+        fake_machine.gpu["sm"] = 900 if i == 7 else 1900
     res = window(fake_machine, device="gpu", each=power_cap)
-    assert res["clean"] is False and res["gpu_reasons_seen"] == ["sw_power_cap"]
+    assert res["clean"] is False and res["gpu_reasons_seen"] == ["sw_thermal"] and res["gpu_power_capped"] is False
     assert res["sm_clock_min_mhz"] == 210 or res["sm_clock_min_mhz"] == 900      # baseline reading is the idle clock
     assert res["sm_clock_max_mhz"] == 1900
 
@@ -790,7 +809,7 @@ def test_a_resumed_arm_appends_a_session(fake_machine: FakeMachine, tmp_path: Pa
 def test_thresholds_are_the_documented_constants() -> None:
     t = isolation.Thresholds()
     assert (t.cpu_busy_max, t.psi_avg10_max, t.gpu_mem_used_max_mib, t.gpu_util_max) == (0.10, 5.0, 300, 5.0)
-    assert (t.other_cpu_mean_max, t.other_cpu_sample_max, t.psi_stall_max) == (0.05, 0.25, 0.02)
+    assert (t.other_cpu_mean_max, t.other_cpu_sample_max) == (0.05, 0.25)
     assert (t.swap_pages_max, t.thermal_events_max, t.foreign_gpu_pids_max) == (0, 0, 0)
     assert isolation.PREFLIGHT_SAMPLE_S == 5.0 and isolation.WINDOW_SAMPLE_S == 0.5
 
@@ -801,7 +820,7 @@ def test_the_docs_state_the_threshold_constants() -> None:
     for phrase in (f"more than {isolation.PREFLIGHT_CPU_BUSY_MAX:.0%} of all CPUs", f"avg10 above {isolation.PREFLIGHT_PSI_AVG10_MAX:g}%",
                    f"more than {isolation.GPU_MEM_USED_MAX_MIB} MiB", f"above {isolation.GPU_UTIL_MAX:g}%",
                    f"more than {isolation.OTHER_CPU_MEAN_MAX:.0%} of the machine", f"exceeds {isolation.OTHER_CPU_SAMPLE_MAX:.0%}",
-                   f"exceeds {isolation.PSI_STALL_MAX:.0%} of the window", f"{isolation.PREFLIGHT_SAMPLE_S:g} second sample",
+                   f"{isolation.PREFLIGHT_SAMPLE_S:g} second sample",
                    f"every {isolation.WINDOW_SAMPLE_S:g} s", f"{isolation.RAM_FACTOR} times the model file"):
         assert phrase in section, phrase
     for timer in isolation.TIMERS:
@@ -891,7 +910,7 @@ def _tune_child(tmp_path: Path, mode: str) -> tuple[subprocess.Popen, Path]:
     script = tmp_path / "child.py"
     script.write_text(TUNE_CHILD.format(bench=str(ROOT / "bench")))
     p = subprocess.Popen([sys.executable, str(script), mode], env={**os.environ, **env}, stdout=subprocess.PIPE,
-                         text=True)
+                         text=True, preexec_fn=_default_signals)
     assert p.stdout is not None and p.stdout.readline().strip() == "ready"
     assert state.read_text().strip() == "performance"
     return p, state
@@ -977,11 +996,20 @@ def test_compare_writes_the_clean_fields_and_leaves_accuracy_over_all_rows(tmp_p
 # need_ram_gb, and the fake scripts are valid shell
 
 
+def test_unreadable_model_size_is_none_not_zero(tmp_path: Path) -> None:
+    assert isolation.need_ram_gb(tmp_path / "missing") is None
+    assert isolation.need_ram_gb(tmp_path) is None            # a directory is not a model file
+
+
+def test_the_memory_check_fails_naming_the_source_when_the_need_is_unknown(fake_machine: FakeMachine) -> None:
+    rep = isolation.preflight("cpu", None, machine=fake_machine, sample_s=1.0)
+    assert [c.name for c in rep.failed] == ["memory"] and "model file" in detail(rep, "memory")
+
+
 def test_need_ram_is_a_multiple_of_the_model_file(tmp_path: Path) -> None:
     f = tmp_path / "m.gguf"
     f.write_bytes(b"x" * 4_000_000)
     assert isolation.need_ram_gb(f) == pytest.approx(0.01)
-    assert isolation.need_ram_gb(tmp_path / "missing") == 0.0
 
 
 def test_fake_scripts_pass_bash_n(tmp_path: Path) -> None:
@@ -990,3 +1018,132 @@ def test_fake_scripts_pass_bash_n(tmp_path: Path) -> None:
         path.write_text(body)
         assert subprocess.run(["bash", "-n", str(path)]).returncode == 0
     assert "\\x" not in FAKE_NVIDIA + FAKE_PPD
+
+
+# B1: the benchmark child's own last ticks are not "other" when it exits before the closing tick
+
+
+BURN_13 = "import time\nend = time.monotonic() + 1.3\nwhile time.monotonic() < end:\n    pass\n"
+
+
+def test_a_real_child_that_exits_inside_the_window_is_not_counted_as_other(tmp_path: Path) -> None:
+    """Reviewer's repro: the child's ticks leave /proc when it exits, system busy keeps them."""
+    ncpu = os.cpu_count() or 1
+    real = isolation.Machine(sysfs=tmp_path / "nosys", power_root=tmp_path / "nopower")
+    w = isolation.Window(pid=os.getpid(), machine=real, sample_s=0.5)
+    with w:
+        kids = [subprocess.Popen([sys.executable, "-c", BURN_13]) for _ in range(ncpu)]
+        for k in kids:
+            k.wait()
+    assert w.result["other_cpu_share_max"] < 0.25, w.result
+
+
+def test_a_tree_member_that_vanishes_between_samples_is_not_other(fake_machine: FakeMachine) -> None:
+    fake_machine.add_proc(5000, 4242, "child", rate=200)                         # two of four cores
+    w = isolation.Window(pid=4242, machine=fake_machine, thread=False)
+    with w:
+        for i in range(6):
+            fake_machine.advance(0.5)
+            if i == 5:
+                fake_machine.remove_proc(5000)                                    # exits, its parent waits for it
+            w.tick()
+    assert w.result["clean"] is True, w.result
+    assert w.result["other_cpu_share_max"] == pytest.approx(0.0)
+
+
+def test_the_childs_system_time_is_part_of_its_ticks(fake_machine: FakeMachine) -> None:
+    fake_machine.add_proc(5000, 4242, "child", rate=200, sys_share=1.0)           # all kernel time
+    assert window(fake_machine)["clean"] is True
+
+
+def test_iowait_is_idle_not_busy(fake_machine: FakeMachine) -> None:
+    fake_machine.iowait_rate = 200                                                # half of the capacity waits on disk
+    res = window(fake_machine)
+    assert res["clean"] is True and res["other_cpu_share_max"] == pytest.approx(0.0)
+    assert status(pre(fake_machine), "cpu-busy") == "PASS"
+
+
+@pytest.mark.parametrize("which", ["swap_rate", "swapin_rate"])
+def test_swap_in_and_swap_out_each_flag_the_preflight(fake_machine: FakeMachine, which: str) -> None:
+    setattr(fake_machine, which, 50)
+    assert [c.name for c in pre(fake_machine).failed] == ["swap-movement"]
+
+
+@pytest.mark.parametrize("which", ["swap_rate", "swapin_rate"])
+def test_swap_in_and_swap_out_each_flag_the_window(fake_machine: FakeMachine, which: str) -> None:
+    setattr(fake_machine, which, 50)
+    res = window(fake_machine)
+    assert res["clean"] is False and res["swap_pages"] > 0
+
+
+# N4: the GPU is sampled every 2 s, not on every 0.5 s tick
+
+
+def test_gpu_is_sampled_every_two_seconds(fake_machine: FakeMachine) -> None:
+    window(fake_machine, steps=10, device="gpu")
+    queries = [c for c in fake_machine.calls if c[0] == "nvidia-smi" and c[1].startswith("--query-gpu")]
+    assert len(queries) == 4                                  # the opening reading, 2 s, 4 s and the closing one
+
+
+def test_a_gpu_reason_between_gpu_samples_is_missed_but_one_at_a_sample_is_not(fake_machine: FakeMachine) -> None:
+    res = window(fake_machine, steps=10, device="gpu",
+                 each=lambda i: fake_machine.gpu.update(reasons=0x21 if i in (0, 3) else 0x1))
+    assert res["clean"] is False and res["gpu_reasons_seen"] == ["sw_thermal"]
+
+
+# N5: a software power cap is recorded, the other throttle reasons stay noisy
+
+
+def test_a_software_power_cap_is_recorded_not_noisy(fake_machine: FakeMachine) -> None:
+    res = window(fake_machine, device="gpu", each=lambda i: fake_machine.gpu.update(reasons=0x5))
+    assert res["clean"] is True and res["gpu_power_capped"] is True
+    assert "sw_power_cap" in res["gpu_reasons_seen"]
+
+
+@pytest.mark.parametrize("bit,name", [(0x2, "applications_clocks"), (0x8, "hw_slowdown"), (0x20, "sw_thermal"),
+                                       (0x40, "hw_thermal"), (0x80, "hw_power_brake")])
+def test_these_gpu_reasons_stay_noisy(fake_machine: FakeMachine, bit: int, name: str) -> None:
+    res = window(fake_machine, device="gpu", each=lambda i: fake_machine.gpu.update(reasons=0x1 | bit))
+    assert res["clean"] is False and name in res["gpu_reasons_seen"] and res["gpu_power_capped"] is False
+
+
+# N7: every row says whether the preflight was waved through, and which session wrote it
+
+
+def test_a_row_carries_its_session_and_the_allow_noisy_flag(fake_machine: FakeMachine, tmp_path: Path) -> None:
+    fake_machine.profile = fake_machine.platform_profile = "balanced"
+    fake_machine.auto = True
+    arm = isolation.begin_arm("n7", device="cpu", need_ram_gb=1.0, runs_dir=tmp_path, machine=fake_machine,
+                              sample_s=1.0, allow_noisy=True, allow_battery=True, log=lambda m: None)
+    _, info = arm.run(lambda: 1, quiet_sample_s=0.1)
+    iso = info["isolation"]
+    session = json.loads((tmp_path / "n7.env.json").read_text())["sessions"][-1]
+    assert iso["allow_noisy"] is True and iso["preflight_failed_allowed"] is True
+    assert iso["session"] == session["session_id"] and session["session_id"]
+    again = isolation.begin_arm("n7", device="cpu", need_ram_gb=1.0, runs_dir=tmp_path, machine=fake_machine,
+                                sample_s=1.0, allow_noisy=True, allow_battery=True, log=lambda m: None)
+    assert again.session_id != arm.session_id
+
+
+def test_a_clean_arm_rows_say_allow_noisy_false(fake_machine: FakeMachine, tmp_path: Path) -> None:
+    fake_machine.auto = True
+    arm = isolation.begin_arm("n7b", device="cpu", need_ram_gb=1.0, runs_dir=tmp_path, machine=fake_machine,
+                              sample_s=1.0, allow_battery=True, log=lambda m: None)
+    _, info = arm.run(lambda: 1, quiet_sample_s=0.1)
+    assert info["isolation"]["allow_noisy"] is False and info["isolation"]["preflight_failed_allowed"] is False
+
+
+def test_a_child_that_ran_before_the_window_edge_and_exits_is_counted_once(fake_machine: FakeMachine) -> None:
+    """The parent's waited-for time holds the child's whole life, so a per-process difference counts the ticks the
+    child had already used before the previous sample a second time and hides a real intruder. The sum over the
+    tree does not."""
+    fake_machine.add_proc(5000, 4242, "child", rate=200)
+    w = isolation.Window(pid=4242, machine=fake_machine, thread=False)
+    with w:
+        for i in range(6):
+            fake_machine.extra_busy = 80 if i == 5 else 0                      # an intruder in the last interval only
+            fake_machine.advance(0.5)
+            if i == 5:
+                fake_machine.remove_proc(5000)
+            w.tick()
+    assert w.result["other_cpu_share_max"] == pytest.approx(0.2)               # 40 ticks of 200 in that interval

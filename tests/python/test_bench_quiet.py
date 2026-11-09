@@ -55,6 +55,13 @@ TOOLS = ("bash", "cat", "head", "id", "kill", "rm", "sed", "sleep", "tr", "touch
 TIMERS = ["sysstat-collect", "apt-daily", "apt-daily-upgrade", "fwupd-refresh", "anacron", "man-db", "motd-news"]
 
 
+def _default_signals() -> None:
+    """A job started from a background shell or under nohup inherits SIGINT or SIGHUP ignored; the child under
+    test must start with the default dispositions."""
+    for sig in (signal.SIGINT, signal.SIGHUP, signal.SIGQUIT, signal.SIGTERM):
+        signal.signal(sig, signal.SIG_DFL)
+
+
 def _script(path: Path, body: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(body)
@@ -77,7 +84,7 @@ class Rig:
         (self.dir / "persistence").write_text("Disabled\n")
         self.state = tmp / "state"
         self.env = {**os.environ, "PATH": str(self.bin), "FAKE_DIR": str(self.dir),
-                    "BENCH_QUIET_ASSUME_ROOT": "1", "BENCH_QUIET_STATE": str(self.state)}
+                    "BENCH_QUIET_ASSUME_ROOT": "1", "BENCH_QUIET_TESTING": "1", "BENCH_QUIET_STATE": str(self.state)}
         self.env.pop("SUDO_USER", None)
 
     def active(self, *names: str) -> None:
@@ -126,7 +133,7 @@ def test_fake_shims_pass_bash_n(tmp_path: Path) -> None:
 @pytest.mark.skipif(os.geteuid() == 0, reason="the refusal is for non-root users")
 def test_refuses_to_run_without_root_and_changes_nothing(rig: Rig) -> None:
     rig.active(*TIMERS)
-    env = {k: v for k, v in rig.env.items() if k != "BENCH_QUIET_ASSUME_ROOT"}
+    env = {k: v for k, v in rig.env.items() if k not in ("BENCH_QUIET_ASSUME_ROOT", "BENCH_QUIET_TESTING")}
     p = subprocess.run(["bash", str(SCRIPT), "--", "true"], env=env, capture_output=True, text=True)
     assert p.returncode == 2 and "must run as root" in p.stderr
     assert rig.calls() == [] and all(rig.is_active(t) for t in TIMERS)
@@ -186,7 +193,7 @@ def test_never_touches_cron(rig: Rig) -> None:
 def test_restores_on_a_signal(rig: Rig, sig: int, code: int) -> None:
     rig.active("sysstat-collect", "anacron")
     p = subprocess.Popen(["bash", str(SCRIPT), "--", "sleep", "30"], env=rig.env, stdout=subprocess.PIPE,
-                         stderr=subprocess.PIPE, text=True)
+                         stderr=subprocess.PIPE, text=True, preexec_fn=_default_signals)
     deadline = time.time() + 10
     while not rig.state.exists() or "gpu-clocks" not in rig.state.read_text():
         assert time.time() < deadline and p.poll() is None
@@ -252,7 +259,8 @@ def test_restores_on_other_signals_and_leaves_no_child(rig: Rig, sig: int, tmp_p
     rig.active("sysstat-collect")
     pidfile = tmp_path / "child.pid"
     p = subprocess.Popen(["bash", str(SCRIPT), "--", "bash", "-c", f'echo $$ > "{pidfile}"; exec sleep 30'],
-                         env=rig.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                         env=rig.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                         preexec_fn=_default_signals)
     deadline = time.time() + 10
     while not pidfile.exists() or not pidfile.read_text().strip():
         assert time.time() < deadline and p.poll() is None
@@ -268,3 +276,21 @@ def test_restores_on_other_signals_and_leaves_no_child(rig: Rig, sig: int, tmp_p
             break
         time.sleep(0.1)
     assert not Path(f"/proc/{child}").exists(), "the benchmark command was left running"
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="the refusal is for non-root users")
+def test_the_root_seam_alone_does_not_skip_the_root_check(rig: Rig) -> None:
+    """A stray BENCH_QUIET_ASSUME_ROOT=1 in someone's environment must not turn the guard off."""
+    rig.active(*TIMERS)
+    env = {k: v for k, v in rig.env.items() if k != "BENCH_QUIET_TESTING"}
+    p = subprocess.run(["bash", str(SCRIPT), "--", "true"], env=env, capture_output=True, text=True)
+    assert p.returncode == 2 and "must run as root" in p.stderr
+    assert rig.calls() == [] and all(rig.is_active(t) for t in TIMERS)
+
+
+def test_help_prints_the_whole_header_including_the_state_variable(rig: Rig) -> None:
+    p = rig.run("--help")
+    assert p.returncode == 0
+    assert "BENCH_QUIET_STATE=PATH" in p.stdout and "default /run/bench-quiet.state" in p.stdout
+    assert "BENCH_QUIET_TESTING=1" in p.stdout and "SIGKILL" in p.stdout
+    assert "set -uo pipefail" not in p.stdout                  # the header only, not the code
