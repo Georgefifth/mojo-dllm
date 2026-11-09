@@ -66,6 +66,7 @@ class State(VllmState):
         self.model_info_status = 200
         self.server_info_status = 200
         self.rejects: list[list[str]] = []                  # what `rejected_fields` found, one list per rejected POST
+        self.prefix = ""                                    # a path prefix the server sits behind (a reverse proxy); "" for none
 
     def metrics_text(self) -> str:
         return (f"# HELP {COUNTER_LOOKALIKE} Total number of forward passes categorized by CUDA graph.\n"
@@ -78,10 +79,21 @@ class Handler(VllmHandler):
     def st(self) -> State:
         return self.server.state       # type: ignore[attr-defined]
 
+    def _without_prefix(self, path: str) -> str | None:
+        """The path below the server's prefix, or None when the request is not under it (the log keeps the raw target)."""
+        prefix = self.st.prefix
+        if not prefix:
+            return path
+        if path == prefix or path.startswith(prefix + "/"):
+            return path[len(prefix):] or "/"
+        return None
+
     def do_GET(self) -> None:  # noqa: N802
         self._log()
         st = self.st
-        route = self.path.split("?", 1)[0]
+        route = self._without_prefix(self.path.split("?", 1)[0])
+        if route is None:
+            return self._send(404, {"detail": "Not Found"})
         if route == "/v1/models":
             if st.models_status != 200:
                 return self._send(st.models_status, {"object": "error", "message": "models are down",
@@ -104,6 +116,11 @@ class Handler(VllmHandler):
     def do_POST(self) -> None:  # noqa: N802
         n = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(n)
+        below = self._without_prefix(self.path)
+        if below is None:
+            self._log(body)
+            return self._send(404, {"detail": "Not Found"})
+        self.path = below
         if self.path == "/v1/chat/completions":
             try:
                 req = json.loads(body)

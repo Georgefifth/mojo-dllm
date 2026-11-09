@@ -196,6 +196,15 @@ def test_a_trailing_slash_on_the_base_url_does_not_double_the_slash(server: Fake
     assert [r["path"] for r in server.state.requests] == ["/v1/models"]
 
 
+@pytest.mark.parametrize("suffix,target", [("/prefix", "/prefix/v1/models"), ("/prefix/", "/prefix/v1/models"),
+                                           ("/a/b///", "/a/b/v1/models")])
+def test_a_base_url_path_prefix_stays_in_front_of_the_path(server: FakeServer, suffix: str, target: str) -> None:
+    with pytest.raises(_http.HttpError) as e:                # the fake has no route below a prefix: its 404 is expected
+        _http.HttpClient(server.url + suffix, timeout_s=5).get_json("/v1/models")
+    assert e.value.status == 404
+    assert [r["path"] for r in server.state.requests] == [target]
+
+
 @pytest.mark.parametrize("suffix", ["/?x=1", "#frag", "?x=1"])
 def test_a_base_url_with_a_query_or_fragment_is_refused(server: FakeServer, suffix: str) -> None:
     with pytest.raises(EngineError, match="query or fragment"):

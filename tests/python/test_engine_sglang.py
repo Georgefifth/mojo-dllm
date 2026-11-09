@@ -755,6 +755,25 @@ def test_use_env_proxy_sends_every_request_through_the_proxy(rig: Rig, monkeypat
     assert rig.server.state.requests == []                   # the fake server saw nothing: the proxy was tried first
 
 
+@pytest.mark.parametrize("suffix", ["/sglang", "/sglang/", "/a/b"])
+def test_a_base_url_path_prefix_stays_in_front_of_every_request(rig: Rig, suffix: str) -> None:
+    prefix = suffix.rstrip("/")
+    rig.server.state.prefix = prefix                         # the server answers only below this path
+    assert eval_engine.main(rig.argv(limit=1) + ["--base-url", rig.server.url + suffix]) == 0
+    seen = sorted({(r["method"], r["path"]) for r in rig.server.state.requests})
+    assert seen == [("GET", prefix + "/model_info"), ("GET", prefix + "/server_info"), ("GET", prefix + "/v1/models"),
+                    ("POST", prefix + "/v1/chat/completions")]
+    assert len(rig.rows()) == 1
+
+
+def test_the_fake_server_with_a_prefix_answers_404_outside_it(rig: Rig) -> None:
+    # the control for the test above: a client that dropped the prefix would be refused, not served
+    rig.server.state.prefix = "/sglang"
+    with pytest.raises(SystemExit, match="HTTP 404"):
+        rig.run(limit=1)
+    assert rig.rows() == [] and rig.server.state.posts() == []
+
+
 def test_extra_engine_flags_are_refused(rig: Rig) -> None:
     refused(rig, "extra engine flags", "--", "--foo")
 
