@@ -452,9 +452,11 @@ def test_the_refusal_names_the_models_the_server_reports(rig: Rig) -> None:
     refused(rig, "llama-3, mistral")
 
 
-def test_a_served_model_among_several_is_accepted(rig: Rig) -> None:
+def test_a_served_model_among_several_is_accepted_and_is_the_one_requested(rig: Rig) -> None:
     rig.server.state.models = [{"id": "other", "root": "other"}, {"id": CHECKPOINT, "root": CHECKPOINT}]
     assert rig.run(limit=1) == 0
+    assert json.loads(rig.server.state.posts()[0]["body"])["model"] == CHECKPOINT
+    assert rig.rows()[0]["flags"]["served_model"] == CHECKPOINT
 
 
 def test_a_server_that_lists_no_models_is_refused(rig: Rig) -> None:
@@ -717,6 +719,20 @@ def test_a_base_url_with_a_query_or_fragment_is_refused(rig: Rig, suffix: str) -
 def test_a_trailing_slash_on_the_base_url_does_not_double_the_slash(rig: Rig) -> None:
     eval_engine.main(rig.argv(limit=1) + ["--base-url", rig.server.url + "/"])
     assert all(not r["path"].startswith("//") for r in rig.server.state.requests)
+
+
+def test_environment_proxies_are_ignored_unless_asked(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    for k in ("http_proxy", "HTTP_PROXY"):
+        monkeypatch.setenv(k, "http://127.0.0.1:9")          # nothing listens there
+    assert rig.run(limit=1) == 0
+
+
+def test_use_env_proxy_sends_every_request_through_the_proxy(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    for k in ("http_proxy", "HTTP_PROXY"):
+        monkeypatch.setenv(k, "http://127.0.0.1:9")
+    with pytest.raises(SystemExit, match="cannot reach"):
+        rig.run("--use-env-proxy", limit=1)
+    assert rig.server.state.requests == []                   # the fake server saw nothing: the proxy was tried first
 
 
 def test_extra_engine_flags_are_refused(rig: Rig) -> None:

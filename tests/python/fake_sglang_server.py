@@ -57,7 +57,7 @@ class State(VllmState):
                                        "architectures": ["DiffusionGemmaForBlockDiffusion"]}
         # the cookbook's launch plus `--max-running-requests 1`: dtype stays "auto" because nobody passed --dtype
         self.server_info: dict | int = {
-            "version": "0.5.23", "model_path": CHECKPOINT, "served_model_name": None,
+            "version": "0.5.23", "model_path": CHECKPOINT, "served_model_name": CHECKPOINT,
             "dllm_algorithm": "Gemma4Renoise", "dllm_algorithm_config": None, "dtype": "auto",
             "quantization": None, "max_running_requests": 1, "chat_template": None, "enable_metrics": False,
             "launch_command": "sglang serve --model-path google/diffusiongemma-26B-A4B-it --host 0.0.0.0 "
