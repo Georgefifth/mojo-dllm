@@ -174,7 +174,15 @@ def test_cache_guards() raises:
     var logits = Floats(CANVAS * VOCAB)
     with assert_raises(contains="leaves no room for the canvas"):
         m.prefill(_tokens(15, 1))
-    m.prefill(_tokens(10, 1))
+    # The room guard is exact: 14 + 16 fits in 30, 15 + 16 does not.
+    m.prefill(_tokens(14, 1))
+    # Token id 0 is a valid token, in a prompt and in a canvas.
+    var zero_prompt = _tokens(10, 1)
+    zero_prompt[0] = 0
+    m.prefill(zero_prompt)
+    var zero_canvas = _tokens(CANVAS, 1)
+    zero_canvas[0] = 0
+    m.step(zero_canvas, logits.ptr())
     with assert_raises(contains="canvas of 16 tokens"):
         m.step(_tokens(CANVAS - 1, 1), logits.ptr())
     var bad = _tokens(CANVAS, 1)
