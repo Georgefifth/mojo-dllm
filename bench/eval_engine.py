@@ -52,7 +52,10 @@ def cmd_run(args: argparse.Namespace, extra: list[str]) -> int:
     except EngineError as e:
         raise SystemExit(f"{args.engine}: {e}")
     flags = engine.flags(cfg)
-    model = pathlib.Path(args.model).name
+    # An engine that loads its weights in `check` (hf) has no model file to size: it says what it still needs.
+    sizing = {"ram_gb": engine.ram_gb_after_load(cfg)} if hasattr(engine, "ram_gb_after_load") else {}
+    # `model` is what `compare` reads to tell weights apart; an engine may add to it (hf adds the quantization)
+    model = engine.model_name(cfg) if hasattr(engine, "model_name") else pathlib.Path(args.model).name
     eval_gsm8k.RUNS.mkdir(parents=True, exist_ok=True)
     out = eval_gsm8k.RUNS / f"{args.arm}.jsonl"
     done = eval_gsm8k.answered(out, args.arm, flags, version, model)
@@ -60,7 +63,7 @@ def cmd_run(args: argparse.Namespace, extra: list[str]) -> int:
     if not todo:
         return 0
     with isolation.arm_session(args, arm=args.arm, device=args.device, model=args.model, runs_dir=eval_gsm8k.RUNS,
-                               versions={args.engine: version}) as arm:
+                               versions={args.engine: version}, **sizing) as arm:
         for k, p in todo:
             eval_gsm8k.wait_if_paused()
             prompt = eval_gsm8k.PROMPT.format(question=p["question"])

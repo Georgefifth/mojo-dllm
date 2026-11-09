@@ -4,7 +4,7 @@
 usage:
   python3 bench/eval_gsm8k.py run --model M.gguf --arm NAME [--device gpu] [--gen-length 256]
                                   [--block-length 32] [--steps N] [--limit K] [-- extra mojo-dllm flags]
-  python3 bench/eval_gsm8k.py compare ARM_A ARM_B
+  python3 bench/eval_gsm8k.py compare ARM_A ARM_B [--across-weights]
   python3 bench/eval_gsm8k.py --self-test
 
 `run` answers the 200 problems in bench/eval/gsm8k-200.jsonl with `mojo-dllm
@@ -30,7 +30,9 @@ that have a count (an engine that cannot count them writes null), and
 `forward_passes_rows` says how many that is. The interval's width depends on how
 many problems the arms disagree on: with 10 of 200 it is about +/- 3 points, so a smaller change is "not detectable", not "zero". An arm keeps one
 configuration (flags, code version, model): resuming with another is refused,
-and so is comparing arms that ran different models.
+and so is comparing arms that ran different models, unless `compare --across-weights` says the weights differ on
+purpose (a GGUF against the authors' bf16 or 4-bit weights): the output then holds both model names and
+`"weights_differ": true`, and the accuracy difference includes the quantization.
 """
 
 from __future__ import annotations
@@ -230,11 +232,13 @@ def clean_summary(A: dict[int, dict], B: dict[int, dict], common: list[int],
             "noisy_rows": {na: noisy(A), nb: noisy(B)}, "unchecked_rows": {na: unchecked(A), nb: unchecked(B)}}
 
 
-def cmd_compare(a_name: str, b_name: str, limit: int = 0) -> int:
+def cmd_compare(a_name: str, b_name: str, limit: int = 0, across_weights: bool = False) -> int:
     A, B = first_rows(load_arm(a_name), limit), first_rows(load_arm(b_name), limit)
     ca, cb = arm_config(a_name, A), arm_config(b_name, B)
-    if ca["model"] != cb["model"]:
-        raise SystemExit(f"the arms ran different models: {ca['model']} vs {cb['model']}")
+    weights_differ = ca["model"] != cb["model"]
+    if weights_differ and not across_weights:
+        raise SystemExit(f"the arms ran different models: {ca['model']} vs {cb['model']}; "
+                         "pass --across-weights to compare different weights (quantization then counts in the difference)")
     common = sorted(set(A) & set(B))
     if not common:
         raise SystemExit("the two arms share no problem")
@@ -246,6 +250,7 @@ def cmd_compare(a_name: str, b_name: str, limit: int = 0) -> int:
         date=dt.datetime.now().isoformat(timespec="seconds"), problems=n, arms=[a_name, b_name], limit=limit,
         problems_in_arm={a_name: len(A), b_name: len(B)},
         config={a_name: ca, b_name: cb},
+        models={a_name: ca["model"], b_name: cb["model"]}, weights_differ=weights_differ,
         accuracy={a_name: sum(A[i]["correct"] for i in common) / n, b_name: sum(B[i]["correct"] for i in common) / n},
         difference=d, ci95=[lo, hi], discordant={"a_only": b, "b_only": c}, mcnemar_p=mcnemar_exact(b, c),
         forward_passes_mean={a_name: passes_mean(A, common), b_name: passes_mean(B, common)},
@@ -257,7 +262,7 @@ def cmd_compare(a_name: str, b_name: str, limit: int = 0) -> int:
     suffix = f"-first{limit}" if limit else ""
     out = ROOT / "bench" / "eval" / f"{dt.date.today().isoformat()}-{a_name}-vs-{b_name}{suffix}.json"
     out.write_text(json.dumps(doc, indent=2) + "\n")
-    print(json.dumps({k: doc[k] for k in ("problems", "accuracy", "difference", "ci95", "discordant",
+    print(json.dumps({k: doc[k] for k in ("problems", "models", "weights_differ", "accuracy", "difference", "ci95", "discordant",
                                            "mcnemar_p", "forward_passes_mean", "forward_passes_rows",
                                            "generate_s_mean", "generate_s_mean_clean", "clean_rows",
                                            "noisy_rows", "unchecked_rows")}, indent=1))
@@ -318,10 +323,13 @@ def main() -> int:
     c.add_argument("a")
     c.add_argument("b")
     c.add_argument("--limit", type=int, default=0, help="compare only each arm's first N problems in run order")
+    c.add_argument("--across-weights", action="store_true",
+                   help="compare arms that ran different model files (a GGUF against bf16 weights); the output says "
+                        "weights_differ and an accuracy difference then includes quantization")
     args = ap.parse_args(argv)
     if args.cmd == "run":
         return cmd_run(args, extra)
-    return cmd_compare(args.a, args.b, args.limit)
+    return cmd_compare(args.a, args.b, args.limit, args.across_weights)
 
 
 if __name__ == "__main__":

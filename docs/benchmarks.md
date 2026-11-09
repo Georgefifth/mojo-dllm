@@ -324,6 +324,93 @@ Discordant counts problems only the baseline solved / only the arm solved. Time 
 Evidence: `bench/eval/2026-10-29-baseline-vs-dualcache.json`, `bench/eval/2026-10-29-baseline-vs-threshold09.json`, `bench/eval/2026-10-29-baseline-vs-dualcache-first50.json`, `bench/eval/2026-10-29-baseline-vs-threshold09-first50.json`.
 <!-- eval:end -->
 
+### The authors' own code (Transformers arm)
+
+`bench/eval_engine.py run --engine hf` answers the same 200 problems through the sampling code the model authors
+publish: `generate` from `generate.py` in a checkout of [ML-GSAI/LLaDA](https://github.com/ML-GSAI/LLaDA) for
+LLaDA, and `diffusion_generate` from the remote code of
+[Dream-org/Dream-v0-Instruct-7B](https://huggingface.co/Dream-org/Dream-v0-Instruct-7B) for Dream. The adapter
+imports the LLaDA file from your checkout and never copies it (the repository has no license file).
+
+**This arm runs different weights.** The llama.cpp and mojo-dllm arms load the Q4_K_M GGUF. The Transformers arm
+loads the authors' bf16 safetensors, or a bitsandbytes 4-bit (nf4) copy of them with `--quant 4bit`. An accuracy
+difference between the arms therefore includes quantization as well as any difference between the
+implementations, and `eval_gsm8k.py compare` refuses such a pair unless you pass `--across-weights`. The output
+then holds both model names and `"weights_differ": true`.
+
+Like-for-like settings: temperature 0, steps equal to the generation length, block length 32 and low-confidence
+remasking for LLaDA, entropy remasking for Dream (which has no blocks). The Dream README example uses temperature
+0.2, top_p 0.95 and 512 steps, and the library default algorithm is `origin`; the arm departs from that, and the
+`flags` of every row say so. `version` records the model repository's commit sha (`--model-revision`, a full
+40-character sha; `null` when you give none, and then the weights and the remote code are unpinned), the LLaDA
+checkout's commit, and the `transformers`, `torch` and `bitsandbytes` versions. The Python sampling loop is not a
+speed baseline; read accuracy from this arm, not seconds.
+
+The two READMEs pin different environments (LLaDA: `transformers==4.38.2`; Dream: `transformers==4.46.2` and
+`torch==2.5.1`), so each model gets its own virtual environment. The repository's frozen environment never
+installs them. The runner needs only the standard library besides the model libraries, so run it with the
+environment's own interpreter. The LLaDA README pins no `torch`; I pin 2.5.1 as for Dream, because an unpinned
+install resolves a CUDA 13 build that may not match the laptop's driver. Both lines also pin `numpy<2`; that numpy 1.x
+works with these `transformers` versions is an assumption I did not test. I checked each install line below with `uv pip install --dry-run` only (it resolves: `torch==2.5.1` with the
+CUDA 12.4 libraries, `numpy==1.26.4`, and `bitsandbytes==0.50.2` for the GPU lines); nothing was installed and
+nothing was run.
+
+```bash
+# LLaDA, GPU (4-bit). For the CPU path replace the install line with:
+#   uv pip install --python "$V/bin/python" --extra-index-url https://download.pytorch.org/whl/cpu \
+#       --index-strategy unsafe-best-match "torch==2.5.1+cpu" transformers==4.38.2 accelerate "numpy<2"
+V=~/.cache/mojo-dllm-hf/llada
+uv venv $V --python 3.12
+uv pip install --python "$V/bin/python" torch==2.5.1 transformers==4.38.2 accelerate bitsandbytes "numpy<2"
+git clone https://github.com/ML-GSAI/LLaDA ~/src/LLaDA
+REV=$(curl -s https://huggingface.co/api/models/GSAI-ML/LLaDA-8B-Instruct | jq -r .sha)
+scripts/capped.sh --mem 26G -- "$V/bin/python" bench/eval_engine.py run --engine hf --model GSAI-ML/LLaDA-8B-Instruct \
+    --model-revision "$REV" --llada-repo ~/src/LLaDA --quant 4bit --device gpu --arm hf-llada-4bit --limit 50
+
+# Dream, GPU (4-bit); the CPU line is the same with the CPU install line above and transformers==4.46.2
+V=~/.cache/mojo-dllm-hf/dream
+uv venv $V --python 3.12
+uv pip install --python "$V/bin/python" torch==2.5.1 transformers==4.46.2 accelerate bitsandbytes "numpy<2"
+REV=$(curl -s https://huggingface.co/api/models/Dream-org/Dream-v0-Instruct-7B | jq -r .sha)
+scripts/capped.sh --mem 26G -- "$V/bin/python" bench/eval_engine.py run --engine hf --model Dream-org/Dream-v0-Instruct-7B \
+    --model-revision "$REV" --quant 4bit --device gpu --arm hf-dream-4bit --limit 50
+
+python3 bench/eval_gsm8k.py compare baseline hf-llada-4bit --across-weights
+```
+
+**The repository's code runs on your machine.** The adapter loads with `trust_remote_code=True`, which executes
+the Python files of the model repository (for Dream, `modeling_dream.py` and `generation_utils.py`) at load. Only a
+commit sha says which code that is, so `--model-revision` is required for a Hugging Face repository, and the run
+refuses without it unless you pass `--allow-unpinned` (the rows then say `unpinned`). Look up the sha when you start
+the arm and keep it: the `curl` lines above print the current one. A local directory is not on the hub, so it needs
+no revision; its path is recorded and the sha is marked unverified, because nothing ties the directory to a
+commit. `version` also records the LLaDA checkout's commit with `-dirty` when a tracked file differs from it.
+
+**Which arms count as different weights.** `compare --across-weights` reads each arm's `model`. A 4-bit arm records
+`LLaDA-8B-Instruct|4bit`, so it differs from a bf16 arm of the same repository. Two revisions of one repository
+record the same `model`; they differ in `version.model_revision`, which `compare` does not read.
+
+**Memory.** Two figures, both estimates and not measurements. Before it loads, the adapter reads `MemAvailable`
+from `/proc/meminfo` and refuses to start the load when it is below the load need: bf16 is 1.25 times the weights
+plus 3 GB of working memory (LLaDA's float64 Gumbel noise on the CPU is about 0.5 GB per tensor), 4-bit is the
+weights over 3.5 plus 3 GB. After the load the isolation preflight asks for the 3 GB of working memory only,
+because the weights are resident by then and `MemAvailable` already excludes them. The weights' size comes from a
+table for the two repositories, else from the `*.safetensors` of a local directory; for any other model the size is
+unknown and the run refuses before loading, as it does when `/proc/meminfo` cannot be read. The guard does not
+replace a cap: run the commands above under `scripts/capped.sh` (see [Development](development.md)). The loader
+also passes `low_cpu_mem_usage=True`.
+
+The weights are 14.93 GiB (LLaDA) and 14.19 GiB (Dream) of safetensors, so one model fits a nearly full disk and
+both do not. The adapter loads the model before the preflight and the first problem, and refuses a model that is
+not on the requested device (a model that fell back to the CPU would still answer, slowly).
+
+**Not done yet.** The generation timeout leaves the generation thread running until the stopped process exits. The tests run against stubs: no weights were downloaded and no GPU was used for this arm. The
+memory-fit spike (issue #178, scope item 1: peak RAM, peak VRAM and seconds per step for bf16 on the CPU and for
+4-bit on the GPU) and the GSM8K arm itself (scope item 4) have not run, because the laptop had 4 GB of disk free
+and has to stay quiet for the timed benchmark runs. Whether 4-bit LLaDA fits 6 GB of VRAM is unmeasured, and so
+is the CPU step time. There are no Transformers rows in this document until the arm is committed under
+`bench/eval/`.
+
 ## Limits of this evidence
 
 - One machine: a 13th Gen Intel i5-13420H laptop for the CPU tables, with an

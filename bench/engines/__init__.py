@@ -78,3 +78,4 @@ def get(name: str) -> type:
 
 
 from . import llamacpp  # noqa: E402,F401  (registers itself)
+from . import hf  # noqa: E402,F401  (registers itself)
