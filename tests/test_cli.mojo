@@ -1,12 +1,14 @@
 from std.os import remove
+from std.os.path import exists
 from std.testing import assert_equal, assert_true, assert_raises, TestSuite
 
-from cli.args import Args
+from cli.args import Args, env_flags
 from mojo_dllm.diffusion.sampler import GenResult
 from mojo_dllm.formats.gguf import GGUFFile
 from mojo_dllm.models.diffusion_gemma import DiffusionGemma
 from mojo_dllm.sys.mem import F32Ptr, Floats
 from mojo_dllm.sys.mmap import Mapping
+from mojo_dllm.tokenizer.bpe import Tokenizer
 from main import (
     Decision,
     boolean_flags,
@@ -15,6 +17,7 @@ from main import (
     check_arch_flags,
     command_spec,
     decide,
+    encode_prompt,
     execute,
     inspect_text,
     json_str,
@@ -23,6 +26,7 @@ from main import (
     gemma_only_flags,
     is_top_level_help,
     model_error,
+    version_line,
     stop_json,
     usage,
     usage_for,
@@ -66,6 +70,42 @@ def test_chat_templates_strip_user_text() raises:
     assert_equal(chat_prompt("llada", " \thi\n"), llada)
     assert_equal(chat_prompt("dream", " \thi\n"), dream)
     assert_equal(chat_prompt("unknown", "hi"), llada)
+
+
+def test_chat_template_for_diffusion_gemma() raises:
+    # tokenizer.chat_template: <bos>, a user turn, then an open model turn.
+    assert_equal(
+        chat_prompt("diffusion-gemma", " \thi\n"),
+        "<bos><|turn>user\nhi<turn|>\n<|turn>model\n",
+    )
+
+
+def test_run_prompt_for_diffusion_gemma_has_one_bos() raises:
+    var tok = Tokenizer(GGUFFile("tests/fixtures/gemma4-tokenizer.gguf"))
+    var spec = command_spec("run")
+    var chat = Args(["x", "run", "--prompt", "Hi"], spec.values, spec.booleans)
+    var ids = encode_prompt(tok, "diffusion-gemma", chat)
+    # <bos> from the template is the only BOS; <|turn> opens the user turn
+    # and the model turn, and <turn|> closes the user turn.
+    assert_equal(ids[0], 2)
+    assert_equal(ids[1], 105)
+    var bos = 0
+    var opens = 0
+    var closes = 0
+    for t in ids:
+        bos += 1 if t == 2 else 0
+        opens += 1 if t == 105 else 0
+        closes += 1 if t == 106 else 0
+    assert_equal(bos, 1)
+    assert_equal(opens, 2)
+    assert_equal(closes, 1)
+    var raw = Args(
+        ["x", "run", "--prompt", "Hi", "--no-chat"], spec.values, spec.booleans
+    )
+    var plain = encode_prompt(tok, "diffusion-gemma", raw)
+    assert_equal(len(plain), 2)
+    assert_equal(plain[0], 2)
+    assert_equal(tok.decode([plain[1]], skip_special=False), "Hi")
 
 
 def test_json_escapes_and_preserves_unicode() raises:
@@ -126,6 +166,22 @@ def test_declared_booleans_come_from_the_single_list() raises:
                 if candidate == flag:
                     found = True
             assert_true(found, command + " declares a boolean not in the list")
+
+
+def test_env_flags_are_value_flags_of_run() raises:
+    # Every name the environment can fill must be a declared value flag of
+    # `run` and must not be a boolean: a boolean takes no value, so an
+    # inserted `--flag value` pair would leave the value as a stray
+    # positional, and `run` refuses stray positionals.
+    var run = command_spec("run")
+    for name in env_flags():
+        var in_values = False
+        for flag in run.values:
+            if flag == name:
+                in_values = True
+        assert_true(in_values, name + " is not a value flag of run")
+        for flag in run.booleans:
+            assert_true(flag != name, name + " is a boolean flag of run")
 
 
 def test_a_flag_of_another_command_is_unknown() raises:
@@ -305,6 +361,21 @@ def test_help_exits_zero_and_wins_over_other_problems() raises:
     assert_equal(late.text, usage_for("run"))
     assert_equal(execute(["mojo-dllm", "run", "--help", "--prompt"]), 0)
     assert_equal(execute(["mojo-dllm", "--help"]), 0)
+
+
+def test_version_flag_prints_one_line_and_exits_zero() raises:
+    var d = _decide("--version", [])
+    assert_equal(d.code, 0)
+    assert_true(not d.is_error)
+    assert_true(not d.proceed)
+    assert_equal(d.text, version_line())
+    assert_true(not d.text.__contains__("\n"))
+    assert_true(usage().startswith(version_line() + ": "))
+    assert_equal(execute(["mojo-dllm", "--version"]), 0)
+
+
+def test_usage_mentions_the_version_flag() raises:
+    assert_true(usage().__contains__("mojo-dllm --version"))
 
 
 def test_usage_errors_exit_two() raises:
@@ -952,6 +1023,55 @@ def test_the_gemma_only_flags_are_named_for_other_models() raises:
         spec.booleans,
     )
     assert_equal(gemma_only_flags(some), "--path, --prev-temp-inv")
+
+
+def _logits_args(rows: String, path: String, device: String) -> List[String]:
+    return [
+        "mojo-dllm",
+        "logits",
+        "--model",
+        DG_TINY,
+        "--tokens",
+        _csv(_gemma_tokens(25)),
+        "--rows",
+        rows,
+        "--out",
+        path,
+        "--threads",
+        "1",
+        "--device",
+        device,
+    ]
+
+
+def test_the_logits_command_runs_diffusion_gemma_on_the_cpu() raises:
+    var rows = List[Int]()
+    for r in range(9, 25):
+        rows.append(r)
+    var path = String("build/tests/dg-logits-command.f32")
+    assert_equal(execute(_logits_args(_csv(rows), path, "cpu")), 0)
+    var m = DiffusionGemma(DG_TINY, threads=1, max_tokens=25)
+    var want = Floats(16 * 512)
+    m.forward(_gemma_tokens(25), want.ptr())
+    var mm = Mapping(path)
+    var got = F32Ptr(unsafe_from_address=mm.addr)
+    var differ = 0
+    for i in range(16 * 512):
+        if got.unsafe_load(i) != want[i]:
+            differ += 1
+    remove(path)
+    assert_equal(differ, 0)
+
+
+def test_the_logits_command_refuses_the_gpu_for_diffusion_gemma() raises:
+    var rows = List[Int]()
+    for r in range(9, 25):
+        rows.append(r)
+    var path = String("build/tests/dg-logits-command-gpu.f32")
+    if exists(path):
+        remove(path)
+    assert_equal(execute(_logits_args(_csv(rows), path, "gpu")), 1)
+    assert_true(not exists(path))
 
 
 def main() raises:

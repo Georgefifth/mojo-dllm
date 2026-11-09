@@ -20,6 +20,9 @@ as the value of a flag (`--prompt --help` sets the prompt to `--help`).
 command. Each command declares its flags: a flag the command does not declare
 stops the run (see [Errors](#errors)).
 
+`mojo-dllm --version` prints one line, `mojo-dllm` and the version, and exits
+0. The same version is the `"version"` key of `run --json`.
+
 ## `run`
 
 | Flag | Default | Meaning |
@@ -87,7 +90,10 @@ least 1`, `needs --visual`, or `needs an integer`.
 ## `tokenize`
 
 Prints the token ids of the chat-formatted prompt, the same ids `run` feeds the
-model. Useful to compare against `llama-tokenize`.
+model. Useful to compare against `llama-tokenize`. For a `diffusion-gemma` file
+the prompt is the file's chat template: `<bos>`, a user turn and an open model
+turn, which gives one BOS token (id 2). It reads the tokenizer arrays of the
+file and none of its weights, so it runs on a file too big to load.
 
 ## `inspect`
 

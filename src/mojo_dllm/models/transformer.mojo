@@ -128,7 +128,7 @@ struct ModelConfig(Copyable, ImplicitlyCopyable, Movable):
     var n_experts_used: Int
     var expert_ffn: Int
     var softcap: Float32
-    """`final_logit_softcapping`: logits become softcap * tanh(logit / softcap); 0 is off."""
+    """`final_logit_softcapping`: logits become softcap * tanh(logit / softcap); 0 is off. A missing key means 30, llama.cpp's default."""
     var canvas: Int
     """`diffusion.canvas_length`: the tokens the model denoises after the prompt."""
 
@@ -254,8 +254,7 @@ struct ModelConfig(Copyable, ImplicitlyCopyable, Movable):
             raise Error(
                 GEMMA_ARCH
                 + " does not run on this model: `logits` runs it on the CPU,"
-                " and `run` waits for the gemma4 tokenizer (#62) and the"
-                " denoiser (#65)"
+                " and `run` waits for the generation loop (#64)"
             )
 
 
@@ -453,7 +452,7 @@ def _read_diffusion_gemma(g: GGUFFile) raises -> ModelConfig:
             + GEMMA_CAUSAL
             + " is true: only the bidirectional canvas is implemented"
         )
-    var softcap = g.get_f32_or(a + GEMMA_SOFTCAP, 0.0)
+    var softcap = g.get_f32_or(a + GEMMA_SOFTCAP, 30.0)
     if softcap < 0.0:
         raise Error(
             a + GEMMA_SOFTCAP + " must not be negative, got " + String(softcap)
