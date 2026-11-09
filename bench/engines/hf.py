@@ -43,6 +43,9 @@ from dataclasses import dataclass
 
 from . import EngineError, GenConfig, register
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
+import isolation  # noqa: E402  (bench/isolation.py: its /proc/meminfo reader)
+
 SHORT_TIMEOUT_S = 60           # git rev-parse
 LLADA_MASK_ID = 126336         # generate.py's default and the id its README assigns to [MASK]
 LLADA_PARAMS = ("attention_mask", "steps", "gen_length", "block_length", "temperature", "cfg_scale", "remasking")
@@ -73,6 +76,13 @@ def package_version(name: str) -> str | None:
         return importlib.metadata.version(name)
     except importlib.metadata.PackageNotFoundError:
         return None
+
+
+def mem_available_gb(machine=None) -> float | None:
+    """MemAvailable in GB (1e9 bytes) from /proc/meminfo, read the way the isolation preflight reads it, or None
+    when it cannot be read."""
+    kv = isolation.read_meminfo(machine or isolation.Machine())
+    return None if kv is None else kv["MemAvailable"] * 1024 / 1e9
 
 
 def family_of(model_id: str) -> str:
@@ -287,6 +297,7 @@ class HF:
             print("hf: --allow-unpinned: the weights and the remote code are not pinned and `version` records a "
                   "null model revision", file=sys.stderr)
         spec = Spec(self.family, self._model_id(cfg), self.revision, self.quant, cfg.device)
+        self._guard_memory(cfg)
         try:
             model, tokenizer = load_model(spec)
         except EngineError:
@@ -327,11 +338,10 @@ class HF:
                            "transformers": package_version("transformers"), "torch": package_version("torch"),
                            "bitsandbytes": package_version("bitsandbytes")}, sort_keys=True)
 
-    def ram_gb_after_load(self, cfg: GenConfig) -> float | None:
-        """Free RAM the preflight asks for, an estimate and not a measurement: bf16 is 1.25 times the weights plus
+    def load_need_gb(self, cfg: GenConfig) -> float | None:
+        """Free RAM the load itself needs, an estimate and not a measurement: bf16 is 1.25 times the weights plus
         3 GB of working memory, 4-bit is the weights over 3.5 plus 3 GB. The weights' size comes from the table for
-        the two known repositories, else from the *.safetensors of a local directory, else None: an unknown size
-        fails the preflight's memory check instead of passing it."""
+        the two known repositories, else from the *.safetensors of a local directory, else None (unknown)."""
         local = self._local_dir(cfg)
         if local is not None:
             total = sum(f.stat().st_size for f in local.glob("*.safetensors") if f.is_file()) / 1e9
@@ -342,6 +352,25 @@ class HF:
         if gb is None:
             return None
         return (gb * BF16_RESIDENT if self.quant == "none" else gb / NF4_RATIO) + WORKING_GB
+
+    def ram_gb_after_load(self, cfg: GenConfig) -> float | None:
+        """Free RAM the preflight asks for. `check` has loaded the weights by then, so MemAvailable already excludes
+        them and only the working memory is still needed. None (unknown weights size) fails the preflight."""
+        return WORKING_GB if self.load_need_gb(cfg) is not None else None
+
+    def _guard_memory(self, cfg: GenConfig) -> None:
+        """Refuse before `from_pretrained` when the load would not fit. Fails closed: an unknown weights size or an
+        unreadable /proc/meminfo refuses too."""
+        need = self.load_need_gb(cfg)
+        if need is None:
+            raise EngineError(f"cannot size the memory for {self._model_id(cfg)}: the weights' size is unknown "
+                              "(not one of the two known repositories, and no *.safetensors in a local directory)")
+        avail = mem_available_gb()
+        if avail is None:
+            raise EngineError("cannot read MemAvailable from /proc/meminfo, so the load is not started")
+        if avail < need:
+            raise EngineError(f"MemAvailable is {avail:.1f} GB and loading {self._model_id(cfg)} needs about "
+                              f"{need:.1f} GB (an estimate): refused before loading")
 
     def flags(self, cfg: GenConfig) -> dict:
         base = {"engine": self.name, "family": self.family, "hf_model": self._model_id(cfg), "quant": self.quant,

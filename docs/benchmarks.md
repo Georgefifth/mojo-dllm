@@ -390,12 +390,15 @@ commit. `version` also records the LLaDA checkout's commit with `-dirty` when a 
 `LLaDA-8B-Instruct|4bit`, so it differs from a bf16 arm of the same repository. Two revisions of one repository
 record the same `model`; they differ in `version.model_revision`, which `compare` does not read.
 
-**Memory.** The preflight asks for an estimate, not a measurement: bf16 is 1.25 times the weights plus 3 GB of
-working memory (LLaDA's float64 Gumbel noise on the CPU is about 0.5 GB per tensor), 4-bit is the weights over 3.5
-plus 3 GB. The weights' size comes from a table for the two repositories, else from the `*.safetensors` of a local
-directory; for any other model the size is unknown and the preflight fails. The preflight runs after the load, so it
-cannot protect the load itself (14.9 GB of bf16 on a machine with about 18 GB available): the commands above run
-under `scripts/capped.sh` (see [Development](development.md)), and the loader passes `low_cpu_mem_usage=True`.
+**Memory.** Two figures, both estimates and not measurements. Before it loads, the adapter reads `MemAvailable`
+from `/proc/meminfo` and refuses to start the load when it is below the load need: bf16 is 1.25 times the weights
+plus 3 GB of working memory (LLaDA's float64 Gumbel noise on the CPU is about 0.5 GB per tensor), 4-bit is the
+weights over 3.5 plus 3 GB. After the load the isolation preflight asks for the 3 GB of working memory only,
+because the weights are resident by then and `MemAvailable` already excludes them. The weights' size comes from a
+table for the two repositories, else from the `*.safetensors` of a local directory; for any other model the size is
+unknown and the run refuses before loading, as it does when `/proc/meminfo` cannot be read. The guard does not
+replace a cap: run the commands above under `scripts/capped.sh` (see [Development](development.md)). The loader
+also passes `low_cpu_mem_usage=True`.
 
 The weights are 14.93 GiB (LLaDA) and 14.19 GiB (Dream) of safetensors, so one model fits a nearly full disk and
 both do not. The adapter loads the model before the preflight and the first problem, and refuses a model that is
