@@ -18,7 +18,9 @@ semantic versioning (0.y: minor bumps may break things).
   never need them. `eval_gsm8k.py compare --across-weights` compares arms that ran different model files and writes
   both names and `weights_differ` (`compare` writes `models` and `weights_differ` on every run now, and still
   refuses different models without the flag). `docs/benchmarks.md` explains why the arm's accuracy includes
-  quantization and how to set up one environment per model. The memory-fit spike and the GSM8K arm of #178 have
+  quantization and how to set up one environment per model. A Hugging Face repository now needs
+  `--model-revision` (or `--allow-unpinned`), because the loader runs the repository's Python; the arm's `model`
+  includes `|4bit` so `compare` sees quantization; the preflight memory estimate comes from the weights' size. The memory-fit spike and the GSM8K arm of #178 have
   not run.
 - `scripts/capped.sh` runs a command in its own memory-capped systemd scope: a hard cap, no swap and a
   whole-scope kill on an OOM, so a job that outgrows the machine dies alone instead of taking its terminal with
