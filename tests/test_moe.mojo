@@ -199,6 +199,25 @@ def _scalar_experts(
     return result^
 
 
+def _q8_experts(raw: Mapping, scales: Floats) raises -> ExpertWeights:
+    """The 4 experts of `moe-q8.bin`: 64 gate/up rows of 256 and 256 down rows of 32.
+    """
+    var gate_bytes = 4 * 64 * ggml_row_bytes(8, 256)
+    var down_bytes = 4 * 256 * ggml_row_bytes(8, 32)
+    return ExpertWeights(
+        raw.addr,
+        gate_bytes,
+        8,
+        raw.addr + gate_bytes,
+        down_bytes,
+        8,
+        256,
+        32,
+        4,
+        scales.ptr(),
+    )
+
+
 def _check_moe_scalar(
     gate_kind: Int, down_kind: Int, suffix: String, mixed_routes: Bool = False
 ) raises:
@@ -211,9 +230,19 @@ def _check_moe_scalar(
     scales[1] = 1.5
     scales[2] = -0.25
     scales[3] = 2.0
-    var down_addr = raw.addr + 4 * 2 * ffn * ggml_row_bytes(gate_kind, hidden)
+    var gate_bytes = 4 * 2 * ffn * ggml_row_bytes(gate_kind, hidden)
+    var down_bytes = 4 * hidden * ggml_row_bytes(down_kind, ffn)
     var weights = ExpertWeights(
-        raw.addr, gate_kind, down_addr, down_kind, hidden, ffn, 4, scales.ptr()
+        raw.addr,
+        gate_bytes,
+        gate_kind,
+        raw.addr + gate_bytes,
+        down_bytes,
+        down_kind,
+        hidden,
+        ffn,
+        4,
+        scales.ptr(),
     )
     var ws = MoEWorkspace(n, weights)
     var x = Floats(n * hidden)
@@ -312,6 +341,57 @@ def test_moe_scatter_handles_unequal_expert_groups() raises:
     _check_moe_scalar(12, 8, "q4-q8", True)
 
 
+def test_expert_weights_refuse_a_source_of_the_wrong_size() raises:
+    var raw = Mapping("tests/fixtures/moe-q8.bin")
+    var scales = Floats(4)
+    var gate_bytes = 4 * 64 * ggml_row_bytes(8, 256)
+    var down_bytes = 4 * 256 * ggml_row_bytes(8, 32)
+    var weights = _q8_experts(raw, scales)
+    assert_equal(weights.n_experts, 4)
+    # The file holds both tensors, so a guard that is mutated away reads valid
+    # memory and the test fails by assertion.
+    with assert_raises(
+        contains=(
+            "the gate/up tensor holds "
+            + String(gate_bytes - 1)
+            + " bytes, but 4 experts of 64 rows of 256 Q8_0 values take "
+            + String(gate_bytes)
+        )
+    ):
+        _ = ExpertWeights(
+            raw.addr,
+            gate_bytes - 1,
+            8,
+            raw.addr + gate_bytes,
+            down_bytes,
+            8,
+            256,
+            32,
+            4,
+            scales.ptr(),
+        )
+    with assert_raises(
+        contains=(
+            "the down tensor holds "
+            + String(down_bytes + 34)
+            + " bytes, but 4 experts of 256 rows of 32 Q8_0 values take "
+            + String(down_bytes)
+        )
+    ):
+        _ = ExpertWeights(
+            raw.addr,
+            gate_bytes,
+            8,
+            raw.addr + gate_bytes,
+            down_bytes + 34,
+            8,
+            256,
+            32,
+            4,
+            scales.ptr(),
+        )
+
+
 def test_routing_rejects_invalid_top_k() raises:
     with assert_raises():
         _ = Routing(16, 4, 5)
@@ -322,16 +402,7 @@ def test_moe_empty_canvas_and_invalid_route_guards() raises:
     var scales = Floats(4)
     for e in range(4):
         scales[e] = 1
-    var weights = ExpertWeights(
-        raw.addr,
-        8,
-        raw.addr + 4 * 64 * ggml_row_bytes(8, 256),
-        8,
-        256,
-        32,
-        4,
-        scales.ptr(),
-    )
+    var weights = _q8_experts(raw, scales)
     var empty_ws = MoEWorkspace(0, weights)
     var ws = MoEWorkspace(1, weights)
     var x = Floats(256)
@@ -366,16 +437,7 @@ def _check_moe_dimension_guard(field: Int) raises:
     var scales = Floats(4)
     for e in range(4):
         scales[e] = 1
-    var weights = ExpertWeights(
-        raw.addr,
-        8,
-        raw.addr + 4 * 64 * ggml_row_bytes(8, 256),
-        8,
-        256,
-        32,
-        4,
-        scales.ptr(),
-    )
+    var weights = _q8_experts(raw, scales)
     # Retain valid backing buffers and alter only one advertised dimension.
     # If its guard is removed, the kernel can run safely and assert_raises
     # fails instead of a buffer overrun disguising the missing validation.
@@ -420,16 +482,7 @@ def test_moe_rejects_negative_expert_id() raises:
     var scales = Floats(4)
     for e in range(4):
         scales[e] = 1
-    var weights = ExpertWeights(
-        raw.addr,
-        8,
-        raw.addr + 4 * 64 * ggml_row_bytes(8, 256),
-        8,
-        256,
-        32,
-        4,
-        scales.ptr(),
-    )
+    var weights = _q8_experts(raw, scales)
     # The expected Error must be reported before this negative id reaches
     # the grouping Lists, whose bounds check otherwise traps.
     var ws = MoEWorkspace(2, weights)

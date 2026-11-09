@@ -191,6 +191,10 @@ semantic versioning (0.y: minor bumps may break things).
   metadata key is refused (the first used to win without a message). `TensorInfo`
   has a `supported` field in place of the byte count of -1 that marked a type
   the reader cannot size, and `ggml_row_bytes` refuses a partial block (#195).
+- `PackedMatrix` and `ExpertWeights` take the byte count of their source along
+  with its address and refuse a source that does not hold exactly the rows the
+  shape needs. Callers that build them by hand (the benchmarks, the tests) pass
+  the size of the buffer (#218).
 - Model configuration rejects incompatible RoPE widths/scaling and attention
   key lengths, and unsupported-architecture errors list LLaDA and Dream.
 - Matrix load errors name the tensor and distinguish an unsupported type from

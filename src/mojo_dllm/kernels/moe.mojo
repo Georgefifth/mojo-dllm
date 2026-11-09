@@ -8,8 +8,8 @@ Weights are repacked once; the workspace is reused between denoising steps.
 
 from std.math import exp, sqrt, tanh
 
-from mojo_dllm.formats.gguf import ggml_row_bytes
-from mojo_dllm.kernels.packed import PackedMatrix, pgemm
+from mojo_dllm.formats.gguf import ggml_row_bytes, ggml_type_name
+from mojo_dllm.kernels.packed import PackedMatrix, matrix_bytes, pgemm
 from mojo_dllm.kernels.qgemm import QActs, quantize_acts
 from mojo_dllm.sys.mem import Bytes, Floats, F32Ptr
 from mojo_dllm.sys.parallel import parallel_for
@@ -160,15 +160,19 @@ struct ExpertWeights(Movable):
     def __init__(
         out self,
         gate_up_addr: Int,
+        gate_up_bytes: Int,
         gate_up_kind: Int,
         down_addr: Int,
+        down_bytes: Int,
         down_kind: Int,
         hidden: Int,
         ffn: Int,
         n_experts: Int,
         scales: F32Ptr,
     ) raises:
-        if hidden <= 0 or ffn <= 0 or n_experts <= 0:
+        """Repacks every expert's matrices. Each `*_bytes` is the size of the
+        whole tensor of all experts and must equal what the dimensions take."""
+        if hidden <= 0 or ffn <= 0 or n_experts <= 0 or ffn > Int.MAX // 2:
             raise Error("MoE expert dimensions must be positive")
         self.hidden = hidden
         self.ffn = ffn
@@ -176,12 +180,47 @@ struct ExpertWeights(Movable):
         self.gate_up = List[PackedMatrix]()
         self.down = List[PackedMatrix]()
         self.scales = Floats(n_experts)
-        var gate_stride = 2 * ffn * ggml_row_bytes(gate_up_kind, hidden)
-        var down_stride = hidden * ggml_row_bytes(down_kind, ffn)
+        var gate_stride = matrix_bytes(
+            ggml_row_bytes(gate_up_kind, hidden), 2 * ffn
+        )
+        var down_stride = matrix_bytes(ggml_row_bytes(down_kind, ffn), hidden)
+        var gate_want = matrix_bytes(gate_stride, n_experts)
+        var down_want = matrix_bytes(down_stride, n_experts)
+        if gate_up_bytes != gate_want:
+            raise Error(
+                "the gate/up tensor holds "
+                + String(gate_up_bytes)
+                + " bytes, but "
+                + String(n_experts)
+                + " experts of "
+                + String(2 * ffn)
+                + " rows of "
+                + String(hidden)
+                + " "
+                + ggml_type_name(gate_up_kind)
+                + " values take "
+                + String(gate_want)
+            )
+        if down_bytes != down_want:
+            raise Error(
+                "the down tensor holds "
+                + String(down_bytes)
+                + " bytes, but "
+                + String(n_experts)
+                + " experts of "
+                + String(hidden)
+                + " rows of "
+                + String(ffn)
+                + " "
+                + ggml_type_name(down_kind)
+                + " values take "
+                + String(down_want)
+            )
         for e in range(n_experts):
             self.gate_up.append(
                 PackedMatrix(
                     gate_up_addr + e * gate_stride,
+                    gate_stride,
                     gate_up_kind,
                     2 * ffn,
                     hidden,
@@ -189,7 +228,11 @@ struct ExpertWeights(Movable):
             )
             self.down.append(
                 PackedMatrix(
-                    down_addr + e * down_stride, down_kind, hidden, ffn
+                    down_addr + e * down_stride,
+                    down_stride,
+                    down_kind,
+                    hidden,
+                    ffn,
                 )
             )
             self.scales[e] = scales.unsafe_load(e)

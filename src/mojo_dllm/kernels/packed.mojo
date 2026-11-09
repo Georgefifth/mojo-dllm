@@ -60,6 +60,24 @@ comptime TOK_TILE_Q6 = 4
 comptime GROUPS_PER_ITEM = 2
 
 
+def matrix_bytes(row_bytes: Int, rows: Int) raises -> Int:
+    """Bytes of `rows` rows of `row_bytes` each; raises when they do not fit an
+    Int, so an untrusted shape cannot wrap into a small size."""
+    if (
+        rows < 0
+        or row_bytes < 0
+        or (row_bytes > 0 and rows > Int.MAX // row_bytes)
+    ):
+        raise Error(
+            "a matrix of "
+            + String(rows)
+            + " rows of "
+            + String(row_bytes)
+            + " bytes is too large to size"
+        )
+    return rows * row_bytes
+
+
 struct PackedMatrix(Movable):
     var kind: Int
     var N: Int
@@ -69,7 +87,15 @@ struct PackedMatrix(Movable):
     var group_bytes: Int
     """Bytes per 8-row group across all blocks."""
 
-    def __init__(out self, src_addr: Int, kind: Int, N: Int, K: Int) raises:
+    def __init__(
+        out self, src_addr: Int, src_bytes: Int, kind: Int, N: Int, K: Int
+    ) raises:
+        """Repacks `N` rows of `K` weights of type `kind` from `src_addr`.
+
+        `src_bytes` is what the caller knows the source to hold. It must equal
+        the bytes of N rows exactly, so a shape that disagrees with the tensor
+        it was taken from is an error and not a read past the tensor.
+        """
         if (
             kind != GGML_Q4_K
             and kind != GGML_Q6_K
@@ -91,6 +117,21 @@ struct PackedMatrix(Movable):
                 + "multiple of "
                 + String(block_size)
             )
+        var row_bytes = ggml_row_bytes(kind, K)
+        var want = matrix_bytes(row_bytes, N)
+        if src_bytes != want:
+            raise Error(
+                "the source holds "
+                + String(src_bytes)
+                + " bytes, but "
+                + String(N)
+                + " rows of "
+                + String(K)
+                + " "
+                + ggml_type_name(kind)
+                + " values take "
+                + String(want)
+            )
         self.kind = kind
         self.N = N
         self.K = K
@@ -104,7 +145,6 @@ struct PackedMatrix(Movable):
         self.data = Bytes((N // 8) * self.group_bytes, zero=False)
         var dst_base = self.data.addr
         var gb = self.group_bytes
-        var row_bytes = ggml_row_bytes(kind, K)
         var is_q4 = kind == GGML_Q4_K
 
         def work(grp: Int) {imm}:

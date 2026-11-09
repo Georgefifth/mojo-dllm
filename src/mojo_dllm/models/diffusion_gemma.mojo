@@ -92,7 +92,7 @@ def _load_matrix(
             + "]"
         )
     g.map.populate(g.data_addr(t), t.n_bytes)
-    var pm = PackedMatrix(g.data_addr(t), t.ggml_type, rows, cols)
+    var pm = PackedMatrix(g.data_addr(t), t.n_bytes, t.ggml_type, rows, cols)
     g.map.drop(g.data_addr(t), t.n_bytes)
     return pm^
 
@@ -211,8 +211,10 @@ struct GemmaLayer(Movable):
         g.map.populate(g.data_addr(dn), dn.n_bytes)
         self.experts = ExpertWeights(
             g.data_addr(gu),
+            gu.n_bytes,
             gu.ggml_type,
             g.data_addr(dn),
+            dn.n_bytes,
             dn.ggml_type,
             d,
             c.expert_ffn,

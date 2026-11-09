@@ -348,7 +348,7 @@ def test_rejects_unsupported_dequant_type() raises:
 def test_rejects_unsupported_packed_type() raises:
     var src = Bytes(8 * 144)
     with assert_raises(contains="cannot repack weight type Q2_K"):
-        _ = PackedMatrix(src.addr, 10, 8, 256)
+        _ = PackedMatrix(src.addr, src.size, 10, 8, 256)
 
 
 def test_rejects_incomplete_dequant_block() raises:
@@ -362,7 +362,7 @@ def test_rejects_incomplete_dequant_block() raises:
 def test_rejects_incomplete_packed_block() raises:
     var src = Bytes(8 * 144)
     with assert_raises(contains="row length 300 is not a multiple of 256"):
-        _ = PackedMatrix(src.addr, GGML_Q4_K, 8, 300)
+        _ = PackedMatrix(src.addr, src.size, GGML_Q4_K, 8, 300)
 
 
 def main() raises:
