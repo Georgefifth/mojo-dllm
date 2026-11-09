@@ -132,6 +132,11 @@ Runs one forward pass over the given token ids and writes f32 logits for the
 requested positions to a file, `[positions, vocab]`, row major. The parity
 tests use it; see [Correctness](correctness.md).
 
+The file is written to `FILE.tmp`, checked there to hold exactly `positions * vocab * 4` bytes, and
+only then renamed to `FILE`; any failure (a full disk, a quota, a missing or unwritable directory)
+removes the temporary file, prints `ERROR: cannot write FILE: ...` with the system's reason, exits with
+status 1 and leaves any earlier `FILE` as it was. `wrote N rows` appears only after the rename.
+
 On a `diffusion-gemma` file the tokens are the prompt followed by the canvas,
 whose length the file declares (`diffusion.canvas_length`, 256 in the real
 model). The model scores only the canvas, so `--rows` must list exactly those

@@ -13,9 +13,10 @@
                        [--path unified|cached] [--prev FILE --prev-temp-inv X]
 """
 
-from std.ffi import ErrNo, external_call, c_int
+from std.ffi import ErrNo, external_call, c_int, get_errno
 from std.math import isfinite
-from std.os import getenv
+from std.os import getenv, remove
+from std.os.path import getsize
 from std.sys import argv, exit, num_logical_cores
 from std.time import perf_counter_ns
 
@@ -35,7 +36,7 @@ from mojo_dllm.models.transformer import (
     ModelConfig,
     GEMMA_ARCH,
 )
-from mojo_dllm.sys.mem import Bytes, F32Ptr, Floats
+from mojo_dllm.sys.mem import Bytes, F32Ptr, Floats, U8Ptr
 from mojo_dllm.sys.mmap import Mapping
 from mojo_dllm.tokenizer.bpe import Tokenizer
 from mojo_dllm.tokenizer.gemma4 import gemma4_chat_prompt
@@ -1144,6 +1145,60 @@ def gemma_only_flags(a: Args) -> String:
     return given
 
 
+def write_bytes_checked(path: String, data: U8Ptr, n_bytes: Int) raises:
+    """Writes `n_bytes` to `path` and checks that the file holds them.
+
+    `FileHandle.write_bytes` takes no error path: in Mojo 1.1.0 it calls
+    `abort()` when `write()` fails (stdlib `std/io/file.mojo`, tag mojo/v1.1.0),
+    so a full disk ends the process with SIGABRT and a partial file. `write_all`
+    raises instead, `close` raises for a failure that only shows there (a quota
+    or NFS), and the size check after the close catches a device that took the
+    bytes and kept none of them.
+    """
+    var f = open(path, "w")
+    f.write_all(Span(unsafe_ptr=data, length=n_bytes))
+    f.close()
+    var size = getsize(path)
+    if size != n_bytes:
+        raise Error(
+            path
+            + " holds "
+            + String(size)
+            + " bytes after the write, expected "
+            + String(n_bytes)
+        )
+
+
+def write_f32_file(path: String, data: F32Ptr, n_floats: Int) raises:
+    """Writes `n_floats` f32 values to `path`, or leaves `path` as it was.
+
+    The bytes go to `<path>.tmp`, are checked there, and only then renamed to
+    `path`; any error removes the temporary file first. A consumer such as
+    bench/parity.py then never sees a short file under the final name.
+    """
+    var tmp = path + ".tmp"
+    try:
+        write_bytes_checked(tmp, data.unsafe_bitcast[UInt8](), n_floats * 4)
+        var from_path = tmp
+        var to_path = path
+        var rc = external_call["rename", c_int](
+            from_path.as_c_string_span(), to_path.as_c_string_span()
+        )
+        var failure = get_errno()
+        _ = from_path^
+        _ = to_path^
+        if Int(rc) != 0:
+            raise Error(
+                "cannot rename " + tmp + " to " + path + ": " + String(failure)
+            )
+    except e:
+        try:
+            remove(tmp)
+        except:
+            pass
+        raise Error("cannot write " + path + ": " + String(e))
+
+
 def _logits_gemma(
     path: String,
     threads: Int,
@@ -1236,9 +1291,7 @@ def _logits_gemma(
         m.forward_sc(tokens, out.ptr(), prev_temp_inv)
     else:
         m.forward(tokens, out.ptr())
-    with open(out_path, "w") as f:
-        var p = out.ptr().unsafe_bitcast[UInt8]()
-        f.write_bytes(Span(unsafe_ptr=p, length=c.canvas * c.vocab * 4))
+    write_f32_file(out_path, out.ptr(), c.canvas * c.vocab)
     print("wrote", c.canvas, "rows x", c.vocab, "logits")
 
 
@@ -1248,9 +1301,7 @@ def _logits[
     var vocab = m.config().vocab
     var out = Floats(len(rows) * vocab)
     m.forward(tokens, rows, out.ptr())
-    with open(path, "w") as f:
-        var p = out.ptr().unsafe_bitcast[UInt8]()
-        f.write_bytes(Span(unsafe_ptr=p, length=len(rows) * vocab * 4))
+    write_f32_file(path, out.ptr(), len(rows) * vocab)
     print(
         "wrote",
         len(rows),

@@ -174,6 +174,11 @@ semantic versioning (0.y: minor bumps may break things).
 
 ### Changed
 
+- `logits` writes its `.f32` file through `FILE.tmp`, checks the size and renames it (issue #208). On a full disk
+  `FileHandle.write_bytes` does not return an error: in Mojo 1.1.0 it calls `abort()` when `write()` fails
+  (`std/io/file.mojo`, tag `mojo/v1.1.0`, line 598), so the old code ended with SIGABRT and a partial file under the
+  final name. The new code uses `write_all` and `close`, which raise, then compares the size, and removes the
+  temporary file on any error; the message is `cannot write FILE: <reason>` with exit status 1.
 - `tokenize` and `run` refuse a chat prompt for an architecture other than `llada`, `dream` and `diffusion-gemma`
   (issue #207). `chat_prompt` fell through to the LLaDA header template for every other architecture, so
   `tokenize --model qwen2.gguf --prompt hi` printed the ids of text that model never saw and exited with status 0. The

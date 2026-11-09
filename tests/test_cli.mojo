@@ -1,4 +1,4 @@
-from std.os import remove
+from std.os import mkdir, remove, rmdir
 from std.os.path import exists
 from std.testing import assert_equal, assert_true, assert_raises, TestSuite
 
@@ -6,6 +6,7 @@ from cli.args import Args, env_flags
 from mojo_dllm.diffusion.sampler import GenConfig, GenResult
 from mojo_dllm.formats.gguf import GGUFFile
 from mojo_dllm.models.diffusion_gemma import DiffusionGemma
+from mojo_dllm.models.transformer import DiffusionLM
 from mojo_dllm.sys.mem import F32Ptr, Floats
 from mojo_dllm.sys.mmap import Mapping
 from mojo_dllm.tokenizer.bpe import Tokenizer
@@ -33,6 +34,8 @@ from main import (
     version_line,
     sampler_json,
     stop_json,
+    write_bytes_checked,
+    write_f32_file,
     usage,
     usage_for,
 )
@@ -1443,6 +1446,129 @@ def test_the_context_length_bound_is_exact() raises:
         )
     ):
         check_context_length(10, Int.MAX, 4096, "llada")
+
+
+def _floats(n: Int) raises -> Floats:
+    var f = Floats(n)
+    for i in range(n):
+        f[i] = Float32(i) * 0.25 - 3.0
+    return f^
+
+
+def test_a_full_device_raises_instead_of_aborting() raises:
+    # `write_bytes` aborts the process on ENOSPC (stdlib file.mojo:598); the
+    # checked writer raises with the system's reason. /dev/full always answers
+    # ENOSPC to a write.
+    if not exists("/dev/full"):
+        return
+    var data = _floats(1024)
+    with assert_raises(contains="No space left on device"):
+        write_bytes_checked(
+            "/dev/full", data.ptr().unsafe_bitcast[UInt8](), 4096
+        )
+
+
+def test_a_device_that_keeps_nothing_is_caught_by_the_size_check() raises:
+    # /dev/null accepts every byte and holds none of them.
+    if not exists("/dev/null"):
+        return
+    var data = _floats(1024)
+    with assert_raises(
+        contains="/dev/null holds 0 bytes after the write, expected 4096"
+    ):
+        write_bytes_checked(
+            "/dev/null", data.ptr().unsafe_bitcast[UInt8](), 4096
+        )
+
+
+def test_f32_file_is_written_whole_under_its_final_name_only() raises:
+    var path = String("build/tests/f32-whole.f32")
+    var data = _floats(300)
+    write_f32_file(path, data.ptr(), 300)
+    assert_equal(len(_read_all(path)), 300)
+    var back = _read_all(path)
+    for i in range(300):
+        assert_equal(back[i], data[i])
+    assert_true(not exists(path + ".tmp"), "no temporary file is left behind")
+    remove(path)
+
+
+def test_f32_file_in_a_directory_that_cannot_exist_leaves_nothing() raises:
+    # Mojo's open() makes missing parent directories, and /proc takes none.
+    var path = String("/proc/mojo-dllm-no-such-dir/out.f32")
+    var data = _floats(8)
+    with assert_raises(contains="cannot write " + path):
+        write_f32_file(path, data.ptr(), 8)
+    assert_true(not exists(path))
+    assert_true(not exists(path + ".tmp"))
+
+
+def test_a_failed_rename_removes_the_temporary_file_and_keeps_the_old_one() raises:
+    # The final name is a non-empty directory, so the rename fails after the
+    # temporary file was written and checked.
+    var dir = String("build/tests/f32-rename-dir")
+    if exists(dir + "/keep"):
+        remove(dir + "/keep")
+    if exists(dir):
+        rmdir(dir)
+    mkdir(dir)
+    with open(dir + "/keep", "w") as f:
+        f.write("old")
+    var data = _floats(8)
+    with assert_raises(contains="cannot rename " + dir + ".tmp to " + dir):
+        write_f32_file(dir, data.ptr(), 8)
+    assert_true(not exists(dir + ".tmp"), "the temporary file was removed")
+    with open(dir + "/keep", "r") as f:
+        assert_equal(f.read(), "old")
+    remove(dir + "/keep")
+    rmdir(dir)
+
+
+def test_the_logits_command_writes_every_requested_llada_row() raises:
+    # The generic writer, not DiffusionGemma's: 2 rows of the tiny model's 512
+    # logits, byte for byte what a direct forward pass gives.
+    var path = String("build/tests/llada-logits-command.f32")
+    var model = "tests/fixtures/tiny-llada.gguf"
+    assert_equal(
+        execute(
+            [
+                "mojo-dllm",
+                "logits",
+                "--model",
+                model,
+                "--tokens",
+                "5,17,300,42",
+                "--rows",
+                "1,3",
+                "--out",
+                path,
+                "--threads",
+                "1",
+            ]
+        ),
+        0,
+    )
+    var m = DiffusionLM(model, threads=1, max_tokens=4)
+    var want = Floats(2 * 512)
+    m.forward([5, 17, 300, 42], [1, 3], want.ptr())
+    var got = _read_all(path)
+    assert_equal(len(got), 2 * 512)
+    var differ = 0
+    for i in range(2 * 512):
+        if got[i] != want[i]:
+            differ += 1
+    assert_equal(differ, 0)
+    assert_true(not exists(path + ".tmp"))
+    remove(path)
+
+
+def test_the_logits_command_writes_nothing_when_the_output_cannot_be_made() raises:
+    var rows = List[Int]()
+    for r in range(9, 25):
+        rows.append(r)
+    var path = String("/proc/mojo-dllm-no-such-dir/dg-logits.f32")
+    assert_equal(execute(_logits_args(_csv(rows), path, "cpu")), 1)
+    assert_true(not exists(path))
 
 
 def test_the_gemma_only_flags_are_named_for_other_models() raises:
