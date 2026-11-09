@@ -179,6 +179,10 @@ semantic versioning (0.y: minor bumps may break things).
   non-zero power of two, and an array whose element count is negative or
   larger than the bytes left in the file, naming the key (#55, #56). An
   alignment of 0 used to point tensors at the file header.
+- The GGUF reader compares a length with the bytes left in the file instead of
+  adding it to the read position, so a string length between 2^63 minus the
+  position and 2^63 no longer wraps past the bounds check and aborts the
+  process; a `Reader` that starts outside the file refuses to exist (#194).
 - Model configuration rejects incompatible RoPE widths/scaling and attention
   key lengths, and unsupported-architecture errors list LLaDA and Dream.
 - Matrix load errors name the tensor and distinguish an unsupported type from

@@ -371,6 +371,8 @@ def malformed() -> None:
     assert int(array.parts[3][0]) == 5  # int32 elements
     patch("key-length", int(scalar.offset), 8, 1 << 20, len("general.architecture"))
     patch("key-length-negative", int(scalar.offset), 8, 1 << 63, len("general.architecture"))
+    # A length just under 2^63: the read position plus the length wraps negative (#194).
+    patch("key-length-int64max", int(scalar.offset), 8, 0x7FFFFFFFFFFFFFF0, len("general.architecture"))
     patch("scalar-type", part_offset(scalar, 2), 4, 99, 8)
     patch("array-type", part_offset(array, 3), 4, 99, 5)
     patch("nested-array", part_offset(array, 3), 4, 9, 5)

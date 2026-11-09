@@ -1,6 +1,6 @@
 from std.testing import assert_equal, assert_raises, TestSuite
 
-from mojo_dllm.formats.gguf import GGUFFile, GGML_Q4_K, ggml_row_bytes
+from mojo_dllm.formats.gguf import GGUFFile, GGML_Q4_K, Reader, ggml_row_bytes
 from mojo_dllm.quant.kquants import dequant_row
 from mojo_dllm.kernels.packed import PackedMatrix
 from mojo_dllm.sys.mem import Bytes, Floats
@@ -109,6 +109,37 @@ def test_rejects_oversized_key() raises:
 def test_rejects_key_length_that_wraps_negative() raises:
     with assert_raises(contains="GGUF file truncated"):
         _ = GGUFFile(FIX + "key-length-negative.gguf")
+
+
+def test_rejects_key_length_that_wraps_the_position_sum() raises:
+    # 24 + 0x7FFFFFFFFFFFFFF0 wraps to a negative Int, so a check written as
+    # `at + n > size` lets it through.
+    with assert_raises(contains="GGUF file truncated"):
+        _ = GGUFFile(FIX + "key-length-int64max.gguf")
+
+
+def test_reader_skip_and_string_refuse_a_length_that_wraps() raises:
+    # 8 + (Int.MAX - 4) overflows to a negative Int.
+    var buf = Bytes(16)
+    var r = Reader(buf.addr, 16, 8)
+    with assert_raises(contains="GGUF file truncated: wanted"):
+        r.skip(Int.MAX - 4)
+    assert_equal(r.at, 8)
+    with assert_raises(contains="GGUF file truncated: wanted"):
+        r.skip(-1)
+    r.skip(8)
+    assert_equal(r.at, 16)
+
+
+def test_reader_refuses_a_start_outside_the_file() raises:
+    var buf = Bytes(16)
+    with assert_raises(contains="GGUF read position -1 is outside the file"):
+        _ = Reader(buf.addr, 16, -1)
+    with assert_raises(contains="GGUF read position 17 is outside the file"):
+        _ = Reader(buf.addr, 16, 17)
+    var at_end = Reader(buf.addr, 16, 16)
+    with assert_raises(contains="GGUF file truncated"):
+        _ = at_end.u8()
 
 
 def test_accepts_last_read_ending_exactly_at_eof() raises:

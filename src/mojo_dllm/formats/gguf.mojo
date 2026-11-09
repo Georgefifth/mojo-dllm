@@ -4,9 +4,12 @@ The header, the key/value block and the tensor directory are parsed once at
 open. Scalar values are decoded on demand from their recorded offset, and
 tensor data is never copied: a tensor is an absolute offset into the mapping.
 
-Every read is bounds-checked. A GGUF file is untrusted input, and an unchecked
-length prefix on a memory map turns into a segfault instead of an error.
-Integers are assembled from bytes, so no read depends on alignment.
+Every read of the header, the metadata and the tensor directory goes through
+`Reader`, which checks it against the bytes left in the file. A GGUF file is
+untrusted input, and an unchecked length prefix on a memory map turns into a
+segfault instead of an error. Integers are assembled from bytes, so no read
+depends on alignment. Tensor bytes are not read here: `GGUFFile.__init__`
+checks each tensor's extent against the file.
 """
 
 from std.memory import bitcast
@@ -183,13 +186,23 @@ struct Reader(Movable):
     var size: Int
     var at: Int
 
-    def __init__(out self, base: Int, size: Int, at: Int = 0):
+    def __init__(out self, base: Int, size: Int, at: Int = 0) raises:
+        if at < 0 or at > size:
+            raise Error(
+                "GGUF read position "
+                + String(at)
+                + " is outside the file of "
+                + String(size)
+                + " bytes"
+            )
         self.base = base
         self.size = size
         self.at = at
 
     def _need(self, n: Int) raises:
-        if n < 0 or self.at + n > self.size:
+        # `at <= size` holds from construction on, so `size - at` cannot wrap.
+        # `at + n` can: a length near 2^63 would pass a check written that way.
+        if n < 0 or n > self.size - self.at:
             raise Error(
                 "GGUF file truncated: wanted "
                 + String(n)
