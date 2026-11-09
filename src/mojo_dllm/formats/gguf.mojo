@@ -15,6 +15,7 @@ checks each tensor's extent against the file.
 from std.collections import Dict
 from std.memory import bitcast
 
+from mojo_dllm.formats.utf8 import utf8_first_invalid
 from mojo_dllm.sys.mmap import Mapping
 from mojo_dllm.sys.mem import U8Ptr
 
@@ -269,19 +270,49 @@ struct Reader(Movable):
         self._need(n)
         self.at += n
 
-    def string(mut self) raises -> String:
+    def string_at(mut self) raises -> Tuple[Int, Int]:
+        """The file offset and the length of the string at the read head, and
+        moves past it. The bytes are not looked at."""
         var n = Int(self.u64())
         self._need(n)
-        var p = U8Ptr(unsafe_from_address=self.base + self.at)
-        var s = String(
-            StringSpan(unsafe_from_utf8=Span(unsafe_ptr=p, length=n))
-        )
+        var start = self.at
         self.at += n
-        return s
+        return (start, n)
+
+    def string(mut self) raises -> String:
+        """The next string. Its bytes must be valid UTF-8: `String` operations
+        assume it, and a token text or a key read from an untrusted file would
+        otherwise reach `repr`, `replace` and the tokenizers unchecked. A file
+        with such a string is refused and the error says where."""
+        var start, n = self.string_at()
+        var span = Span(
+            unsafe_ptr=U8Ptr(unsafe_from_address=self.base + start), length=n
+        )
+        var bad = utf8_first_invalid(span)
+        if bad >= 0:
+            raise Error(
+                "string at file offset "
+                + String(start)
+                + " is not valid UTF-8: byte "
+                + String(bad)
+                + " of "
+                + String(n)
+                + " is 0x"
+                + _hex_byte(span[bad])
+            )
+        return String(StringSpan(unsafe_from_utf8=span))
 
     def skip_string(mut self) raises:
         var n = Int(self.u64())
         self.skip(n)
+
+
+def _hex_byte(b: UInt8) -> String:
+    var digits = "0123456789ABCDEF".as_bytes()
+    var out = List[UInt8]()
+    out.append(digits[Int(b) >> 4])
+    out.append(digits[Int(b) & 15])
+    return String(StringSpan(unsafe_from_utf8=Span(out)))
 
 
 def _scalar_size(kind: Int) raises -> Int:
@@ -352,7 +383,11 @@ struct GGUFFile(Movable):
 
         var seen_keys = Dict[String, Int]()
         for i in range(n_kv):
-            var key = r.string()
+            var key: String
+            try:
+                key = r.string()
+            except e:
+                raise Error("metadata entry " + String(i) + ": " + String(e))
             if key in seen_keys:
                 raise Error(
                     "metadata key "
@@ -419,7 +454,11 @@ struct GGUFFile(Movable):
         var raw_rel = List[UInt64]()
         var seen_names = Dict[String, Int]()
         for i in range(n_tensors):
-            var name = r.string()
+            var name: String
+            try:
+                name = r.string()
+            except e:
+                raise Error("tensor entry " + String(i) + ": " + String(e))
             if name in seen_names:
                 raise Error(
                     "tensor "
@@ -611,7 +650,10 @@ struct GGUFFile(Movable):
         if kv.kind != GGUF_TYPE_STRING:
             raise Error("metadata key " + key + " is not a string")
         var r = Reader(self.map.addr, self.map.size, kv.at)
-        return r.string()
+        try:
+            return r.string()
+        except e:
+            raise Error("metadata key " + key + ": " + String(e))
 
     def get_str_or(self, key: String, default: String) raises -> String:
         if not self.has_key(key):
@@ -627,8 +669,13 @@ struct GGUFFile(Movable):
             raise Error("metadata key " + key + " is not a string array")
         var out = List[String](capacity=kv.count)
         var r = Reader(self.map.addr, self.map.size, kv.at)
-        for _ in range(kv.count):
-            out.append(r.string())
+        for i in range(kv.count):
+            try:
+                out.append(r.string())
+            except e:
+                raise Error(
+                    "metadata key " + key + "[" + String(i) + "]: " + String(e)
+                )
         return out^
 
     def get_int_array(self, key: String) raises -> List[Int]:
@@ -677,7 +724,21 @@ struct GGUFFile(Movable):
         var kv = self.kvs[i]
         if kv.kind == GGUF_TYPE_STRING:
             var rd = Reader(self.map.addr, self.map.size, kv.at)
-            var s = rd.string()
+            var start, n = rd.string_at()
+            var span = Span(
+                unsafe_ptr=U8Ptr(unsafe_from_address=self.map.addr + start),
+                length=n,
+            )
+            var bad = utf8_first_invalid(span)
+            if bad >= 0:
+                return (
+                    "<string, "
+                    + String(n)
+                    + " bytes, not valid UTF-8 at byte "
+                    + String(bad)
+                    + ">"
+                )
+            var s = String(StringSpan(unsafe_from_utf8=span))
             if s.byte_length() > 60:
                 return "<string, " + String(s.byte_length()) + " bytes>"
             return '"' + s.replace("\n", "\\n") + '"'

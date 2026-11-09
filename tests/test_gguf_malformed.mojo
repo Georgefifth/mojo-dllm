@@ -333,6 +333,52 @@ def test_block_bytes_is_zero_for_a_type_it_cannot_size() raises:
     assert_equal(ggml_block_bytes(GGML_Q4_K), 144)
 
 
+def test_rejects_a_key_that_is_not_utf8() raises:
+    with assert_raises(
+        contains=(
+            "metadata entry 1: string at file offset 76 is not valid UTF-8:"
+            " byte 3 of 4 is 0xE9"
+        )
+    ):
+        _ = GGUFFile(FIX + "string-invalid-key.gguf")
+
+
+def test_rejects_a_tensor_name_that_is_not_utf8() raises:
+    with assert_raises(contains="tensor entry 0: string at file offset"):
+        _ = GGUFFile(FIX + "string-invalid-tensor-name.gguf")
+
+
+def test_rejects_a_string_value_that_is_not_utf8() raises:
+    var g = GGUFFile(FIX + "string-invalid-value.gguf")
+    with assert_raises(
+        contains=(
+            "metadata key test.str: string at file offset 96 is not valid"
+            " UTF-8: byte 3 of 4 is 0xE9"
+        )
+    ):
+        _ = g.get_str("test.str")
+
+
+def test_rejects_a_token_text_that_is_not_utf8() raises:
+    var g = GGUFFile(FIX + "string-invalid-token.gguf")
+    with assert_raises(
+        contains="metadata key tokenizer.ggml.tokens[1]: string at file offset"
+    ):
+        _ = g.get_str_array("tokenizer.ggml.tokens")
+    # The count and the other entries are still known without decoding.
+    assert_equal(g.array_len("tokenizer.ggml.tokens"), 3)
+
+
+def test_accepts_strings_of_every_width() raises:
+    var g = GGUFFile(FIX + "string-valid.gguf")
+    var wide = "a \u00e9 \u20ac \U0001f600"
+    assert_equal(g.get_str("test.str"), wide)
+    var tokens = g.get_str_array("tokenizer.ggml.tokens")
+    assert_equal(tokens[0], wide)
+    assert_equal(tokens[1], "\u00e9")
+    assert_equal(g.tensor(wide).n_elements(), 8)
+
+
 def test_rejects_unsupported_row_type() raises:
     with assert_raises(contains="unsupported GGUF tensor type: IQ2_XXS"):
         _ = ggml_row_bytes(16, 256)

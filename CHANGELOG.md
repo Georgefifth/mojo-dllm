@@ -244,6 +244,10 @@ semantic versioning (0.y: minor bumps may break things).
   `add_bos_token` without a BOS id, each naming the key. `run` compares the
   tokenizer's vocabulary size with the model's before it loads the weights
   (#200).
+- The GGUF reader checks that every string it turns into a `String` (a key, a
+  tensor name, a string value, a token text) is valid UTF-8 and raises with the
+  entry or key, the file offset and the bad byte; `inspect` prints
+  `<string, N bytes, not valid UTF-8 at byte B>` for such a value (#225).
 - Model configuration rejects incompatible RoPE widths/scaling and attention
   key lengths, and unsupported-architecture errors list LLaDA and Dream.
 - Matrix load errors name the tensor and distinguish an unsupported type from

@@ -864,6 +864,16 @@ def test_run_refuses_a_tokenizer_that_disagrees_with_the_model_vocabulary() rais
         check_tokenizer_matches_model(bad, Tokenizer(bad))
 
 
+def test_inspect_lists_a_value_that_is_not_utf8_without_reading_it() raises:
+    var text = inspect_text(
+        "tests/fixtures/malformed/string-invalid-value.gguf"
+    )
+    assert_true(
+        "  test.str = <string, 4 bytes, not valid UTF-8 at byte 3>\n" in text
+    )
+    assert_true("  tokenizer.ggml.tokens = <array of 3>\n" in text)
+
+
 def test_inspect_rejects_a_second_path() raises:
     assert_equal(
         _check("inspect", ["a", "b"]),

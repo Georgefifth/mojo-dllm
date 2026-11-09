@@ -435,8 +435,8 @@ def raw_gguf(tensors, kvs=(), data=b"", alignment=32) -> bytes:
     offset) and `kvs` holds (key, GGUF value type, payload bytes); the directory is followed by padding to
     `alignment` and `data`."""
 
-    def string(text: str) -> bytes:
-        raw = text.encode()
+    def string(text: str | bytes) -> bytes:
+        raw = text if isinstance(text, bytes) else text.encode()
         return len(raw).to_bytes(8, "little") + raw
 
     out = bytearray(b"GGUF" + (3).to_bytes(4, "little"))
@@ -450,6 +450,43 @@ def raw_gguf(tensors, kvs=(), data=b"", alignment=32) -> bytes:
         out += ggml_type.to_bytes(4, "little") + offset.to_bytes(8, "little")
     out += bytes(-len(out) % alignment)
     return bytes(out + data)
+
+
+def string_array_payload(items: list[bytes]) -> bytes:
+    """The payload of a GGUF array of strings: element type, count, then each string with its length."""
+    out = bytearray(GGUF_STRING.to_bytes(4, "little") + len(items).to_bytes(8, "little"))
+    for item in items:
+        out += len(item).to_bytes(8, "little") + item
+    return bytes(out)
+
+
+def string_cases(out: pathlib.Path) -> None:
+    """GGUF strings that are not valid UTF-8, in a key, a value, a token text and a tensor name (#225), and a
+    control with strings of every width. The lone byte is 0xE9, a Latin-1 e acute: it begins a three-byte sequence
+    that the next byte does not complete."""
+    arch = ("general.architecture", GGUF_STRING, (4).to_bytes(8, "little") + b"test")
+    f32 = ("f32", [8], GGML_F32, 0)
+    data = np.arange(8, dtype="<f4").tobytes()
+    tokens = "tokenizer.ggml.tokens"
+    bad = b"caf\xe9"
+
+    def text(value: bytes) -> bytes:
+        return len(value).to_bytes(8, "little") + value
+
+    def write(name: str, tensors=(f32,), kvs=(arch,)) -> None:
+        (out / (name + ".gguf")).write_bytes(raw_gguf(tensors, kvs, data))
+
+    # The first entry is the architecture, so the bad key is entry 1 and its bytes start at file offset 76.
+    write("string-invalid-key", kvs=(arch, (bad, GGUF_STRING, text(b"x"))))
+    write("string-invalid-value", kvs=(arch, ("test.str", GGUF_STRING, text(bad)),
+                                       (tokens, 9, string_array_payload([b"a", b"b", b"c"]))))
+    write("string-invalid-token", kvs=(arch, (tokens, 9, string_array_payload([b"a", b"b" + bad, b"c"]))))
+    write("string-invalid-tensor-name", tensors=((b"w\xe9ight", [8], GGML_F32, 0),))
+    # Valid strings of one, two, three and four bytes per character, in the same four places.
+    wide = "a \u00e9 \u20ac \U0001f600"
+    write("string-valid", tensors=((wide, [8], GGML_F32, 0),),
+          kvs=(arch, (wide, GGUF_STRING, text(wide.encode())), ("test.str", GGUF_STRING, text(wide.encode())),
+               (tokens, 9, string_array_payload([wide.encode(), "\u00e9".encode(), b"c"]))))
 
 
 def tensor_directory_cases(out: pathlib.Path) -> None:
@@ -490,6 +527,7 @@ def tensor_directory_cases(out: pathlib.Path) -> None:
     two = (1).to_bytes(4, "little")
     write("kv-key-duplicate", [f32], kvs=(arch, ("test.value", GGUF_UINT32, two), ("test.value", GGUF_UINT32, two)))
     write("kv-keys-distinct", [f32], kvs=(arch, ("test.value", GGUF_UINT32, two), ("test.other", GGUF_UINT32, two)))
+    string_cases(out)
 
 
 def dequant_types() -> None:
