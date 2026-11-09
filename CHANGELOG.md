@@ -174,6 +174,10 @@ semantic versioning (0.y: minor bumps may break things).
 
 ### Changed
 
+- The LLaDA and Dream loops stop with `non-finite logits at canvas position P, step S` when a row's softmax is not a
+  number, on the CPU and the GPU statistics path (issue #196). A single Q4_K block with an f16 scale of NaN used to
+  give a canvas of token 0 repeated, stop reason `complete` and exit status 0. The GPU kernel's tie and NaN rule is
+  unchanged; the host checks the statistics it returns.
 - `run` refuses a canvas longer than the file's context length before any weight is mapped (issue #201): the prompt
   tokens plus `--max-tokens` must not exceed `<arch>.context_length` (4096 when the key is absent). A
   `--max-tokens` of 2^62 used to wrap the activation sizes and write past a small buffer after the whole model had

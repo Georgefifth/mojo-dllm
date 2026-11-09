@@ -183,8 +183,14 @@ ERROR: tensor blk.0.attn_q.weight is Q8_0 with 33 elements per row, which is not
 ERROR: tensor blk.0.attn_q.weight is listed twice (entries 3 and 9)
 ERROR: metadata key general.name is listed twice (entries 1 and 5)
 ERROR: tensor shape mismatch for blk.0.attn_q.weight: [4096, 2048], expected [4096, 4096]
+ERROR: non-finite logits at canvas position 3, step 1
 ERROR: no GPU found: the GPU backend needs an NVIDIA GPU with compute capability 8.0 or newer (run with --device cpu)
 ```
+
+`non-finite logits` comes from the LLaDA and Dream loops, on the CPU and the GPU: a canvas row whose softmax is not a
+number (a NaN or `+inf` logit, or every logit `-inf`) stops the run instead of committing token 0 there. The position
+counts from the start of the canvas and the step from 1. One `-inf` logit among finite ones is a token of probability 0
+and passes for LLaDA; Dream's default `entropy` confidence has no value for such a row, so Dream refuses it too.
 
 With `--device gpu`, setting `MOJO_DLLM_GPU_PROFILE=1` makes `--verbose` split
 a step into GEMM, attention and LM head time. It synchronizes the GPU after

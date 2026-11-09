@@ -31,7 +31,7 @@ remasking the algorithm is deterministic and token-for-token comparable with
 the reference.
 """
 
-from std.math import exp, isfinite, log
+from std.math import exp, isfinite, log, nan
 from std.time import perf_counter_ns
 
 from mojo_dllm.models.transformer import DenoisingModel, RowStats
@@ -226,6 +226,30 @@ def select_top(conf: List[Float64], k: Int) -> List[Int]:
     return out^
 
 
+def _z_ok(z: Float64) -> Bool:
+    """True when z, the sum of exp(logit - row maximum), is what a finite row
+    gives: at least 1 (the maximum contributes exactly 1) and below infinity.
+    A NaN fails the first test. A row with a NaN or a +inf logit, or with every
+    logit -inf, gives z = inf here, because `exp` of NaN is inf in this
+    runtime, and that fails the second."""
+    return z >= 1.0 and isfinite(z)
+
+
+def _refuse_non_finite(position: Int, step: Int) -> Error:
+    """The error for a logits row whose probabilities are not numbers.
+
+    A NaN or an infinity in a row makes `x > mx` false, so the argmax falls
+    back to token 0 and the confidence is NaN, which `select_top` then orders
+    by index: the loop would commit token 0 and report "complete".
+    """
+    return Error(
+        "non-finite logits at canvas position "
+        + String(position)
+        + ", step "
+        + String(step)
+    )
+
+
 def argmax_and_prob(row: F32Ptr, vocab: Int) -> Tuple[Int, Float64]:
     """First argmax and its softmax probability, accumulated in f64."""
     var best = 0
@@ -239,7 +263,7 @@ def argmax_and_prob(row: F32Ptr, vocab: Int) -> Tuple[Int, Float64]:
     var m64 = Float64(mx)
     for v in range(vocab):
         z += exp(Float64(row.unsafe_load(v)) - m64)
-    return (best, 1.0 / z)
+    return (best, 1.0 / z if _z_ok(z) else nan[DType.float64]())
 
 
 def _gumbel_argmax(
@@ -453,13 +477,22 @@ def _generate_llada[
                     var row = logits.ptr().unsafe_offset(row_of[j] * vocab)
                     var tok = _gumbel_argmax(row, vocab, cfg.temperature, rng)
                     x0.append(tok)
+                    var p = _prob_of(row, vocab, tok)
+                    if not isfinite(p):
+                        raise _refuse_non_finite(
+                            cand[j] - P, res.forward_passes
+                        )
                     if cfg.remasking == "random":
                         conf.append(rng.uniform())
                     else:
-                        conf.append(_prob_of(row, vocab, tok))
+                        conf.append(p)
             elif use_stats:
                 x0 = stats.tok.copy()
                 for j in range(len(cand)):
+                    if not _z_ok(stats.z[j]):
+                        raise _refuse_non_finite(
+                            cand[j] - P, res.forward_passes
+                        )
                     if cfg.remasking == "random":
                         conf.append(rng.uniform())
                     else:
@@ -468,6 +501,11 @@ def _generate_llada[
                 var greedy = _greedy_rows(
                     logits.ptr(), row_of, vocab, "llada", cfg.threads
                 )
+                for j in range(len(cand)):
+                    if not isfinite(greedy[1][j]):
+                        raise _refuse_non_finite(
+                            cand[j] - P, res.forward_passes
+                        )
                 x0 = greedy[0].copy()
                 if cfg.remasking == "random":
                     for _ in range(len(cand)):
@@ -508,6 +546,8 @@ def _prob_of(row: F32Ptr, vocab: Int, tok: Int) -> Float64:
     var z = Float64(0)
     for v in range(vocab):
         z += exp(Float64(row.unsafe_load(v)) - Float64(mx))
+    if not _z_ok(z):
+        return nan[DType.float64]()
     return exp(Float64(row.unsafe_load(tok)) - Float64(mx)) / z
 
 
@@ -535,6 +575,8 @@ def _confidence(
         z += exp(x - m64)
         if v != best and x > second:
             second = x
+    if not _z_ok(z):
+        return (best, nan[DType.float64]())
     var p_best = 1.0 / z
     if algorithm == "maskgit_plus":
         return (best, p_best)
@@ -632,7 +674,10 @@ def _generate_dream[
             res.forward_passes += 1
             x0 = stats.tok.copy()
             for j in range(len(cand)):
-                conf.append(_confidence_from_stats(stats, j, algorithm))
+                var c = _confidence_from_stats(stats, j, algorithm)
+                if not _z_ok(stats.z[j]) or not isfinite(c):
+                    raise _refuse_non_finite(cand[j] - P, res.forward_passes)
+                conf.append(c)
         else:
             model.forward(res.tokens, rows, logits.ptr())
             res.forward_passes += 1
@@ -642,6 +687,9 @@ def _generate_dream[
             var greedy = _greedy_rows(
                 logits.ptr(), row_of, vocab, algorithm, cfg.threads
             )
+            for j in range(len(cand)):
+                if not isfinite(greedy[1][j]):
+                    raise _refuse_non_finite(cand[j] - P, res.forward_passes)
             x0 = greedy[0].copy()
             conf = greedy[1].copy()
         var n_transfer = len(cand)
