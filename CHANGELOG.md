@@ -8,6 +8,43 @@ semantic versioning (0.y: minor bumps may break things).
 
 ### Added
 
+- `bench/engines/sglang.py`, an engine for `bench/eval_engine.py` that answers GSM8K through the OpenAI-compatible
+  endpoint of a running SGLang server (issue #180): `--engine sglang --base-url URL`, with the declared `--dtype`,
+  `--algorithm`, `--checkpoint`, `--max-running-requests` and `--chat-template`. The request has four fields (`model`,
+  one user message, `max_completion_tokens`, `stream` false) and never carries a field that the DiffusionGemma algorithm
+  rejects with HTTP 400 (logprobs, a grammar, a penalty, a seed) or ignores (`temperature`, `top_p`, `top_k`). SGLang
+  has no `/version` route, so the release,
+  the diffusion algorithm, the dtype and the batch size come from `GET /server_info` and the checkpoint from
+  `GET /model_info`. A declared value that contradicts a reported one is refused, a server that runs no diffusion
+  algorithm or reports a quantization is refused, and the batch size must be 1 (reported or declared). The arm's
+  `model` carries the dtype, so `compare --across-weights` sees different weights, and `flags.model_matches_server` is
+  true only when `--model` is the checkpoint the server reports (false for an alias that matches the served name only).
+  `forward_passes` is null in every
+  row: SGLang exposes no per-request step count on `main` or in v0.5.23 (sgl-project/sglang#48675 was open and
+  unmerged on 2026-11-09), and the engine never reads `/metrics`. The model-list and completion checks moved from the
+  vLLM engine into `bench/engines/_openai.py`, unchanged, and both engines use them. The shared HTTP client also
+  strips control characters from, and caps, the text of a connection or transport error, as it does for server text.
+  `docs/benchmarks.md` has the runbook with the cookbook's serve command as read on 2026-11-09, the note that the bf16
+  checkpoint is 48.1 GiB, the Vast.ai API key read into `VAST_API_KEY` instead of passed as an argument (a test scans
+  the fenced blocks of the file for a key in an argument list), and a
+  DiffusionGemma section that lists the llama.cpp reference, vLLM, SGLang and mojo-dllm rows, each marked
+  `no committed run yet`. No server was run and the evaluation on a rented machine has not happened.
+- `bench/engines/vllm.py`, an engine for `bench/eval_engine.py` that answers GSM8K through the OpenAI-compatible
+  endpoint of a running vLLM server (issue #179): `--engine vllm --base-url URL --served-model NAME --quantization Q`
+  (and the declared `--checkpoint`, `--attention-backend`, `--chat-template`). It sends one chat message at
+  temperature 0 and never starts or stops a server. `version` records the release `GET /version` reports plus the
+  declared checkpoint, quantization and attention backend, and the arm's `model` carries the quantization so
+  `compare --across-weights` sees different weights. `forward_passes` is the change of vLLM's
+  `vllm:diffusion_num_denoising_steps` counter (read under that name and under its `_total` exposition name) across
+  one request, null when the server has none, and refused unless `--max-num-seqs 1` is declared, because the counter
+  is server-wide. Server text in errors is stripped of control characters and capped, and the arm's `--model` must
+  equal the server's reported `root` or served name. The
+  run is refused for a served model the server does not list, an HTTP error, an empty completion or a response
+  with no token counts. `flags` says `"server": "remote"`: the isolation checks see only the client machine.
+  `bench/engines/_http.py` is the shared standard-library client (no credentials, no cookies, no redirects, no
+  retries, no environment proxy unless asked, a size bound and one deadline per request). `docs/benchmarks.md` has
+  the runbook (rent, serve, run, destroy) with the recipe page's serve commands as read on 2026-11-09. No server
+  was run and the evaluation on a rented GPU has not happened.
 - `bench/engines/hf.py`, an engine for `bench/eval_engine.py` that runs GSM8K through the authors' own sampling
   code (issue #178): `generate` from a checkout of ML-GSAI/LLaDA (`--llada-repo`, imported and never copied) and
   `diffusion_generate` from Dream's remote code, at temperature 0 with steps equal to the generation length.
