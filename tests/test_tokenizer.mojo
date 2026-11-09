@@ -298,5 +298,66 @@ def test_byte_level_end_of_generation_is_the_rule_llada_and_dream_always_had() r
         assert_true(tok.is_eog(tok.eos_id) and tok.is_eog(tok.eot_id))
 
 
+def _refuses_tokenizer(name: String, message: String) raises:
+    var g = GGUFFile(FIX + "gpt2-tiny/" + name + ".gguf")
+    with assert_raises(contains=message):
+        _ = Tokenizer(g)
+
+
+def test_byte_level_loader_refuses_types_shorter_than_tokens() raises:
+    _refuses_tokenizer(
+        "short-types",
+        (
+            "tokenizer.ggml.token_type has 5 entries but tokenizer.ggml.tokens"
+            " has 6"
+        ),
+    )
+
+
+def test_byte_level_loader_refuses_an_unknown_pre_tokenizer() raises:
+    _refuses_tokenizer("pre-unknown", "unsupported pre-tokenizer: mystery")
+
+
+def test_byte_level_loader_refuses_a_special_id_outside_the_vocabulary() raises:
+    _refuses_tokenizer(
+        "special-out-of-range",
+        (
+            "metadata key tokenizer.ggml.bos_token_id is 99, outside the"
+            " vocabulary of 6 tokens"
+        ),
+    )
+
+
+def test_byte_level_loader_refuses_a_repeated_token_text() raises:
+    _refuses_tokenizer(
+        "duplicate-token",
+        "tokenizer.ggml.tokens has the text 'a' at ids 0 and 5",
+    )
+
+
+def test_byte_level_loader_refuses_a_missing_eos_id() raises:
+    _refuses_tokenizer(
+        "no-eos", "metadata key tokenizer.ggml.eos_token_id is missing"
+    )
+
+
+def test_byte_level_loader_refuses_add_bos_without_a_bos_id() raises:
+    _refuses_tokenizer(
+        "add-bos-without-id",
+        (
+            "tokenizer.ggml.add_bos_token is true but"
+            " tokenizer.ggml.bos_token_id is missing"
+        ),
+    )
+
+
+def test_decode_refuses_ids_outside_the_vocabulary() raises:
+    var tok = Tokenizer(GGUFFile(FIX + "gpt2-tiny/ids.gguf"))
+    with assert_raises(contains="token id -1 is outside the vocabulary"):
+        _ = tok.decode([-1])
+    with assert_raises(contains="token id 6 is outside the vocabulary"):
+        _ = tok.decode([6])
+
+
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

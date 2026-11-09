@@ -20,6 +20,7 @@ from main import (
     encode_prompt,
     execute,
     inspect_text,
+    check_tokenizer_matches_model,
     json_str,
     _csv,
     _logits_gemma,
@@ -851,6 +852,16 @@ def test_inspect_says_why_a_llada_config_is_refused() raises:
         "\nconfig: refused: query heads are not a multiple of KV heads\n"
         in text
     )
+
+
+def test_run_refuses_a_tokenizer_that_disagrees_with_the_model_vocabulary() raises:
+    var ok = GGUFFile("tests/fixtures/gpt2-tiny/with-model.gguf")
+    check_tokenizer_matches_model(ok, Tokenizer(ok))
+    var bad = GGUFFile("tests/fixtures/gpt2-tiny/with-model-vocab-512.gguf")
+    with assert_raises(
+        contains="the tokenizer has 6 tokens but the model's vocabulary is 512"
+    ):
+        check_tokenizer_matches_model(bad, Tokenizer(bad))
 
 
 def test_inspect_rejects_a_second_path() raises:

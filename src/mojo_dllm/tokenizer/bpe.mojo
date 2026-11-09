@@ -31,6 +31,7 @@ from std.collections import Dict
 from mojo_dllm.formats.gguf import GGUFFile
 from mojo_dllm.formats.utf8 import utf8_decode_bytes
 from mojo_dllm.tokenizer.gemma4 import Gemma4Vocab
+from mojo_dllm.tokenizer.vocab import special_token_id, validate_token_table
 from mojo_dllm.tokenizer.unicode_tables import (
     LETTER_RANGES,
     NUMBER_RANGES,
@@ -292,9 +293,7 @@ struct Tokenizer(Movable):
         self.tokens = g.get_str_array("tokenizer.ggml.tokens")
         self.types = g.get_int_array("tokenizer.ggml.token_type")
         var merges = g.get_str_array("tokenizer.ggml.merges")
-        self.ids = Dict[String, Int]()
-        for i in range(len(self.tokens)):
-            self.ids[self.tokens[i]] = i
+        self.ids = validate_token_table(self.tokens, len(self.types))
         self.ranks = Dict[String, Int]()
         for i in range(len(merges)):
             self.ranks[merges[i]] = i
@@ -332,15 +331,28 @@ struct Tokenizer(Movable):
                 extra += 1
             self.byte_to_cp[b] = cp
             self.cp_to_byte[cp] = b
-        self.bos_id = g.get_int_or("tokenizer.ggml.bos_token_id", -1)
-        self.eos_id = g.get_int_or("tokenizer.ggml.eos_token_id", -1)
-        self.mask_id = g.get_int_or("tokenizer.ggml.mask_token_id", -1)
-        self.pad_id = g.get_int_or("tokenizer.ggml.padding_token_id", -1)
-        self.unk_id = g.get_int_or("tokenizer.ggml.unknown_token_id", -1)
+        var n = len(self.tokens)
+        self.bos_id = special_token_id(g, "tokenizer.ggml.bos_token_id", n)
+        self.eos_id = special_token_id(g, "tokenizer.ggml.eos_token_id", n)
+        self.mask_id = special_token_id(g, "tokenizer.ggml.mask_token_id", n)
+        self.pad_id = special_token_id(g, "tokenizer.ggml.padding_token_id", n)
+        self.unk_id = special_token_id(g, "tokenizer.ggml.unknown_token_id", n)
+        var arch = g.get_str_or("general.architecture", "")
+        if self.eos_id < 0 and (arch == "llada" or arch == "dream"):
+            raise Error(
+                "metadata key tokenizer.ggml.eos_token_id is missing: "
+                + arch
+                + " stops generation at the end-of-sequence token"
+            )
         self.eot_id = self.ids.get("<|eot_id|>", self.ids.get("<|im_end|>", -1))
         self.add_bos = g.get_bool("tokenizer.ggml.add_bos_token") if g.has_key(
             "tokenizer.ggml.add_bos_token"
         ) else False
+        if self.add_bos and self.bos_id < 0:
+            raise Error(
+                "tokenizer.ggml.add_bos_token is true but"
+                " tokenizer.ggml.bos_token_id is missing"
+            )
         self.cache = Dict[String, List[Int]]()
         self.uc = UnicodeClasses()
 

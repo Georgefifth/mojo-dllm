@@ -236,6 +236,14 @@ semantic versioning (0.y: minor bumps may break things).
   to `run` or `tokenize`, because the Mojo runtime refuses an argument that is
   not UTF-8 with exit status 125 before the program starts; `docs/cli.md` lists
   that message (#197).
+- The byte-level tokenizer loader and the gemma4 vocabulary share one
+  `validate_token_table` (new `tokenizer/vocab.mojo`) and one `special_token_id`.
+  The byte-level loader now refuses a token type array of another length than
+  the token array, a repeated token text (the last id used to win), a special
+  token id outside the vocabulary, a missing EOS id for LLaDA and Dream, and
+  `add_bos_token` without a BOS id, each naming the key. `run` compares the
+  tokenizer's vocabulary size with the model's before it loads the weights
+  (#200).
 - Model configuration rejects incompatible RoPE widths/scaling and attention
   key lengths, and unsupported-architecture errors list LLaDA and Dream.
 - Matrix load errors name the tensor and distinguish an unsupported type from

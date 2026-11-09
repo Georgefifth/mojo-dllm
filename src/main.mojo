@@ -485,6 +485,20 @@ def stop_json(res: GenResult) -> String:
     )
 
 
+def check_tokenizer_matches_model(g: GGUFFile, tok: Tokenizer) raises:
+    """The tokenizer and the model agree on the vocabulary size. A model that
+    can produce an id the tokenizer lacks fails only when `decode` raises after
+    the whole generation."""
+    var vocab = ModelConfig(g).vocab
+    if tok.vocab_size() != vocab:
+        raise Error(
+            "the tokenizer has "
+            + String(tok.vocab_size())
+            + " tokens but the model's vocabulary is "
+            + String(vocab)
+        )
+
+
 def cmd_run(a: Args) raises:
     var interval: Int
     try:
@@ -519,6 +533,7 @@ def cmd_run(a: Args) raises:
     if g.architecture() == "diffusion-gemma":
         cfg.steps = cfg.eb_steps
     var tok = Tokenizer(g)
+    check_tokenizer_matches_model(g, tok)
     var prompt = encode_prompt(tok, g.architecture(), a)
     _ = g^
     var tok_s = Float64(perf_counter_ns() - t0) / 1e9

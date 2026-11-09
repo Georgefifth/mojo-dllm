@@ -1101,19 +1101,51 @@ def gpt2_tiny() -> None:
     end-of-turn id is -1. The loader maps bytes to code points itself and needs no byte tokens, so six tokens do.
     """
     (OUT / "gpt2-tiny").mkdir(exist_ok=True)
-    w = GGUFWriter(str(OUT / "gpt2-tiny" / "ids.gguf"), "llada")
-    w.add_string("tokenizer.ggml.model", "gpt2")
-    w.add_string("tokenizer.ggml.pre", "qwen2")
-    w.add_array("tokenizer.ggml.tokens", ["a", "b", "<pad>", "<unk>", "<eos>", "ab"])
-    w.add_array("tokenizer.ggml.token_type", [1, 1, 3, 2, 3, 1])
-    w.add_array("tokenizer.ggml.merges", ["a b"])
-    w.add_uint32("tokenizer.ggml.padding_token_id", 2)
-    w.add_uint32("tokenizer.ggml.unknown_token_id", 3)
-    w.add_uint32("tokenizer.ggml.eos_token_id", 4)
-    w.write_header_to_file()
-    w.write_kv_data_to_file()
-    w.write_tensors_to_file()
-    w.close()
+    base_tokens = ["a", "b", "<pad>", "<unk>", "<eos>", "ab"]
+    base_types = [1, 1, 3, 2, 3, 1]
+
+    def write(name, *, tokens=base_tokens, types=base_types, pre="qwen2", ids=None, add_bos=None, model_vocab=None):
+        w = GGUFWriter(str(OUT / "gpt2-tiny" / name), "llada")
+        w.add_string("tokenizer.ggml.model", "gpt2")
+        w.add_string("tokenizer.ggml.pre", pre)
+        w.add_array("tokenizer.ggml.tokens", list(tokens))
+        w.add_array("tokenizer.ggml.token_type", list(types))
+        w.add_array("tokenizer.ggml.merges", ["a b"])
+        special = {"padding": 2, "unknown": 3, "eos": 4, **(ids or {})}
+        for key, value in special.items():
+            if value is None:
+                continue
+            if value < 0:
+                w.add_int32(f"tokenizer.ggml.{key}_token_id", value)
+            else:
+                w.add_uint32(f"tokenizer.ggml.{key}_token_id", value)
+        if add_bos is not None:
+            w.add_bool("tokenizer.ggml.add_bos_token", add_bos)
+        if model_vocab is not None:
+            # The keys ModelConfig needs, so a test can compare the two vocabulary sizes (#200).
+            w.add_uint32("llada.block_count", 1)
+            w.add_uint32("llada.embedding_length", 256)
+            w.add_uint32("llada.attention.head_count", 2)
+            w.add_uint32("llada.feed_forward_length", 256)
+            w.add_float32("llada.attention.layer_norm_rms_epsilon", 1e-5)
+            w.add_uint32("llada.vocab_size", model_vocab)
+            w.add_uint32("tokenizer.ggml.mask_token_id", 5)
+        w.write_header_to_file()
+        w.write_kv_data_to_file()
+        w.write_tensors_to_file()
+        w.close()
+
+    write("ids.gguf")
+    write("short-types.gguf", types=base_types[:-1])
+    write("pre-unknown.gguf", pre="mystery")
+    write("special-out-of-range.gguf", ids={"bos": 99})
+    write("special-negative.gguf", ids={"bos": -5})
+    write("special-minus-one.gguf", ids={"padding": -1})
+    write("duplicate-token.gguf", tokens=["a", "b", "<pad>", "<unk>", "<eos>", "a"])
+    write("no-eos.gguf", ids={"eos": None})
+    write("add-bos-without-id.gguf", add_bos=True)
+    write("with-model.gguf", model_vocab=6)
+    write("with-model-vocab-512.gguf", model_vocab=512)
 
 
 UTF8_CASES = [
