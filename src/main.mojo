@@ -562,6 +562,34 @@ def eb_flags() -> List[String]:
     ]
 
 
+def llada_only_flags() -> List[String]:
+    """The flags Dream accepts on the command line and never reads."""
+    return ["full-logits", "threshold", "dual-cache"]
+
+
+def sampler_json(arch: String, cfg: GenConfig) -> String:
+    """The JSON members that describe the sampler the run used.
+
+    LLaDA reports its remasking strategy, block length and whether it asked for
+    every row's logits. Dream has no block and no full-logits mode, so those
+    two would describe settings it ignored; it reports the confidence
+    algorithm that ran, `entropy` when the flag says `low_confidence`.
+    """
+    if arch == "dream":
+        var algorithm = cfg.remasking
+        if algorithm == "low_confidence":
+            algorithm = "entropy"
+        return ', "remasking": "' + algorithm + '"'
+    return (
+        ', "remasking": "'
+        + cfg.remasking
+        + '", "block_length": '
+        + String(cfg.block_length)
+        + ', "full_logits": '
+        + ("true" if cfg.full_logits else "false")
+    )
+
+
 def check_arch_flags(a: Args, arch: String) raises:
     """Refuse a flag the model's architecture ignores: a run that quietly
     takes another number of steps than asked for is a wrong answer."""
@@ -587,11 +615,17 @@ def check_arch_flags(a: Args, arch: String) raises:
         var schedule = schedule_problem(a)
         if schedule.byte_length() > 0:
             raise Error(schedule)
-    elif arch == "dream" and remasking == "random":
-        raise Error(
-            "--remasking random does not apply to dream (entropy,"
-            " maskgit_plus or topk_margin; low_confidence means entropy)"
-        )
+    elif arch == "dream":
+        if remasking == "random":
+            raise Error(
+                "--remasking random does not apply to dream (entropy,"
+                " maskgit_plus or topk_margin; low_confidence means entropy)"
+            )
+        # `--block-length` is read by LLaDA only too, but the benchmark and
+        # parity scripts pass it for every architecture, so it is not refused.
+        for flag in llada_only_flags():
+            if a.has(flag):
+                raise Error("--" + flag + " applies to llada only, not " + arch)
 
 
 def stop_json(res: GenResult) -> String:
@@ -844,10 +878,7 @@ def _run[
             + String(cfg.gen_length)
             + ', "steps": '
             + String(cfg.steps)
-            + ', "block_length": '
-            + String(cfg.block_length)
-            + ', "full_logits": '
-            + ("true" if cfg.full_logits else "false")
+            + sampler_json(model.config().arch, cfg)
             + ', "stopped_early": '
             + ("true" if res.stopped_early else "false")
             + ', "forward_passes": '

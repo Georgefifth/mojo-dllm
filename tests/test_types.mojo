@@ -51,7 +51,7 @@ def test_cpu_loader_rejects_decodable_matrix() raises:
     with assert_raises(
         contains="tensor q8_0 is Q8_0: matrix kernels exist for Q4_K and Q6_K"
     ):
-        _ = _load_matrix(g, "q8_0", 4, 96)
+        _ = _load_matrix(g, "q8_0", 4, 96, 1)
 
 
 def test_gpu_loader_refuses_a_short_embedding_before_a_device_exists() raises:

@@ -169,9 +169,11 @@ struct ExpertWeights(Movable):
         ffn: Int,
         n_experts: Int,
         scales: F32Ptr,
+        threads: Int = 0,
     ) raises:
-        """Repacks every expert's matrices. Each `*_bytes` is the size of the
-        whole tensor of all experts and must equal what the dimensions take."""
+        """Repacks every expert's matrices on `threads` workers (0: every
+        core). Each `*_bytes` is the size of the whole tensor of all experts
+        and must equal what the dimensions take."""
         if hidden <= 0 or ffn <= 0 or n_experts <= 0 or ffn > Int.MAX // 2:
             raise Error("MoE expert dimensions must be positive")
         self.hidden = hidden
@@ -224,6 +226,7 @@ struct ExpertWeights(Movable):
                     gate_up_kind,
                     2 * ffn,
                     hidden,
+                    threads,
                 )
             )
             self.down.append(
@@ -233,6 +236,7 @@ struct ExpertWeights(Movable):
                     down_kind,
                     hidden,
                     ffn,
+                    threads,
                 )
             )
             self.scales[e] = scales.unsafe_load(e)
@@ -335,7 +339,7 @@ def grouped_experts(
             var t = pair // top_k
             for d in range(hidden):
                 ws.input[r * hidden + d] = x.unsafe_load(t * hidden + d)
-        quantize_acts(ws.input.ptr(), rows, hidden, ws.qa_gate)
+        quantize_acts(ws.input.ptr(), rows, hidden, ws.qa_gate, threads)
         pgemm(
             weights.gate_up[e],
             ws.qa_gate,
@@ -350,7 +354,7 @@ def grouped_experts(
                     gelu_tanh(ws.gate_up[r * 2 * ffn + f])
                     * ws.gate_up[r * 2 * ffn + ffn + f]
                 )
-        quantize_acts(ws.activated.ptr(), rows, ffn, ws.qa_down)
+        quantize_acts(ws.activated.ptr(), rows, ffn, ws.qa_down, threads)
         pgemm(
             weights.down[e], ws.qa_down, rows, ws.output.ptr(), hidden, threads
         )

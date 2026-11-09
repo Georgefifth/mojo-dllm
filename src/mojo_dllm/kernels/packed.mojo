@@ -32,7 +32,6 @@ dotted with the activation sums, as in `qgemm.mojo`.
 
 from std.memory import bitcast
 from std.sys import CompilationTarget, llvm_intrinsic
-from max.algorithm import parallelize
 
 from mojo_dllm.formats.gguf import (
     GGML_Q5_0,
@@ -45,7 +44,11 @@ from mojo_dllm.formats.gguf import (
 from mojo_dllm.kernels.qgemm import QActs
 from mojo_dllm.quant.kquants import load_f16, q4k_scale_min
 from mojo_dllm.sys.mem import Bytes, F32Ptr, I8Ptr, U8Ptr
-from mojo_dllm.sys.parallel import parallel_for
+from mojo_dllm.sys.parallel import (
+    parallel_for,
+    parallel_for_counted,
+    worker_count,
+)
 
 comptime QK = 256
 comptime P4_SB = 1216
@@ -86,11 +89,21 @@ struct PackedMatrix(Movable):
     var data: Bytes
     var group_bytes: Int
     """Bytes per 8-row group across all blocks."""
+    var repack_workers: Int
+    """Workers that ran the repack: the setting, capped by the 8-row groups."""
 
     def __init__(
-        out self, src_addr: Int, src_bytes: Int, kind: Int, N: Int, K: Int
+        out self,
+        src_addr: Int,
+        src_bytes: Int,
+        kind: Int,
+        N: Int,
+        K: Int,
+        threads: Int = 0,
     ) raises:
-        """Repacks `N` rows of `K` weights of type `kind` from `src_addr`.
+        """Repacks `N` rows of `K` weights of type `kind` from `src_addr`, the
+        8-row groups in parallel on `worker_count(threads)` workers. Each
+        group is independent, so the count cannot change a byte.
 
         `src_bytes` is what the caller knows the source to hold. It must equal
         the bytes of N rows exactly, so a shape that disagrees with the tensor
@@ -165,7 +178,9 @@ struct PackedMatrix(Movable):
                     else:
                         _pack_32_row(src, dst, r, kind)
 
-        parallelize(work, N // 8)
+        self.repack_workers = parallel_for_counted(
+            work, N // 8, worker_count(threads)
+        )
 
 
 def _pack_32_row(blk: U8Ptr, dst: U8Ptr, r: Int, kind: Int):

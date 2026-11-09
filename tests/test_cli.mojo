@@ -3,7 +3,7 @@ from std.os.path import exists
 from std.testing import assert_equal, assert_true, assert_raises, TestSuite
 
 from cli.args import Args, env_flags
-from mojo_dllm.diffusion.sampler import GenResult
+from mojo_dllm.diffusion.sampler import GenConfig, GenResult
 from mojo_dllm.formats.gguf import GGUFFile
 from mojo_dllm.models.diffusion_gemma import DiffusionGemma
 from mojo_dllm.sys.mem import F32Ptr, Floats
@@ -30,6 +30,7 @@ from main import (
     is_top_level_help,
     model_error,
     version_line,
+    sampler_json,
     stop_json,
     usage,
     usage_for,
@@ -1344,6 +1345,48 @@ def test_run_help_says_the_entropy_bound_flags_have_no_effect_yet() raises:
             " diffusion-gemma (#64)"
         )
     )
+
+
+def test_dream_refuses_the_flags_that_only_llada_reads() raises:
+    var spec = command_spec("run")
+    var cases = List[List[String]]()
+    cases.append(["--full-logits"])
+    cases.append(["--threshold", "0.5"])
+    cases.append(["--dual-cache"])
+    for given in cases:
+        var argv = List[String](["x", "run", "--prompt", "p"])
+        for g in given:
+            argv.append(g)
+        var a = Args(argv, spec.values, spec.booleans)
+        var flag = given[0]
+        with assert_raises(contains=flag + " applies to llada only, not dream"):
+            check_arch_flags(a, "dream")
+        check_arch_flags(a, "llada")
+
+
+def test_json_reports_the_remasking_the_run_used() raises:
+    var cfg = GenConfig()
+    var llada = sampler_json("llada", cfg)
+    assert_equal(
+        llada,
+        (
+            ', "remasking": "low_confidence", "block_length": 32,'
+            ' "full_logits": false'
+        ),
+    )
+    cfg.remasking = "random"
+    cfg.full_logits = True
+    cfg.block_length = 8
+    assert_equal(
+        sampler_json("llada", cfg),
+        ', "remasking": "random", "block_length": 8, "full_logits": true',
+    )
+    # Dream maps low_confidence to entropy and has neither a block nor a
+    # full-logits mode, so its JSON names the algorithm and omits both.
+    var dream = GenConfig()
+    assert_equal(sampler_json("dream", dream), ', "remasking": "entropy"')
+    dream.remasking = "topk_margin"
+    assert_equal(sampler_json("dream", dream), ', "remasking": "topk_margin"')
 
 
 def test_the_context_length_bound_is_exact() raises:

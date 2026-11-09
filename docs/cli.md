@@ -43,16 +43,18 @@ stops the run (see [Errors](#errors)).
 | `--eb-bound B` | 0.1 | DiffusionGemma: a position is accepted while the entropies of the lower-entropy positions before it sum to at most B (no effect until `run` accepts DiffusionGemma, #64) |
 | `--eb-stability N` | 1 | DiffusionGemma: steps the argmax canvas must hold before the run may stop; 0 or more, and 0 lets the first step stop it (no effect until `run` accepts DiffusionGemma, #64) |
 | `--eb-confidence C` | 0.005 | DiffusionGemma: the run may stop once the mean entropy over the canvas is below C (no effect until `run` accepts DiffusionGemma, #64) |
-| `--threads N` | all logical CPUs | worker threads (with `--device gpu`, only the sampler uses them) |
+| `--threads N` | all logical CPUs | worker threads of every parallel CPU loop, including the activation quantization and the weight repack at load (with `--device gpu`, only the sampler uses them) |
 | `--device D` | `cpu` | `cpu`, or `gpu` for an NVIDIA GPU with compute capability 8.0 or newer |
 | `--no-chat` | off | skip the chat template |
-| `--full-logits` | off | LLaDA: compute logits for every position, as a generic runtime would (for benchmarking). Dream ignores it |
+| `--full-logits` | off | LLaDA: compute logits for every position, as a generic runtime would (for benchmarking). Dream refuses it |
 | `--no-early-stop` | off | run every step even after the answer is final (the benchmark and parity harnesses use it) |
 | `--visual` | off | show the canvas: masked positions as teal blocks, tokens committed in that step in bold orange when colour is enabled |
 | `--visual-interval N` | 1 | redraw every N steps and at the final step; requires `--visual` and N at least 1 |
 | `--verbose` | off | model, device and load time before the text; step timings and peak memory after it |
 | `--dump-step-stats` | off | one line per denoising step |
-| `--json` | off | one JSON object with timings, tokens and text. `steps_taken` counts the denoising steps run and `stop_reason` says why the loop ended: `complete`, `answer_fixed` (early stop), or for DiffusionGemma `converged` or `max_steps` |
+| `--json` | off | one JSON object with timings, tokens and text. `remasking` names the strategy the run used (for Dream, `entropy` when the flag says `low_confidence`); `block_length` and `full_logits` appear for LLaDA only, because Dream reads neither. `steps_taken` counts the denoising steps run and `stop_reason` says why the loop ended: `complete`, `answer_fixed` (early stop), or for DiffusionGemma `converged` or `max_steps` |
+
+The flags `--threshold`, `--dual-cache` and `--full-logits` are LLaDA's; a Dream run refuses them by name before the model loads (`--threshold applies to llada only, not dream`). Dream also reads no `--block-length`, but still accepts it, because the benchmark and parity scripts pass it for every architecture.
 
 The printed answer ends at the first end-of-text or end-of-turn token in the
 canvas. Generation stops as soon as that answer is final: once the first

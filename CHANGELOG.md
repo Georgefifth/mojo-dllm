@@ -174,6 +174,13 @@ semantic versioning (0.y: minor bumps may break things).
 
 ### Changed
 
+- `--threads` reaches every parallel CPU loop (issue #206): `quantize_acts` and the weight repack ran on every core
+  whatever the setting, so a `--threads 1` timing included all-core work. Both now use `parallel_for` with the worker
+  count, and the model, DiffusionGemma and MoE paths pass it; each token and each 8-row group is independent, so the
+  bytes are identical for every count. A Dream run refuses `--full-logits`, `--threshold` and `--dual-cache` by name
+  before the model loads, and `run --json` reports `remasking` (Dream's `low_confidence` is `entropy`) and omits
+  `block_length` and `full_logits` for Dream, which reads neither. Dream still accepts `--block-length`: five scripts
+  in `bench/` and `scripts/` pass it for every architecture.
 - `run` refuses a DiffusionGemma file as soon as its header is read, before the tokenizer is built and the prompt
   encoded, and says that the architecture runs through `logits` only until the generation loop is wired (issue #205,
   wiring stays in #64). `run --help` and `docs/cli.md` mark the `--eb-*` flags as having no effect yet. The

@@ -729,7 +729,9 @@ struct Layer(Movable):
     var wu: PackedMatrix
     var wd: PackedMatrix
 
-    def __init__(out self, g: GGUFFile, i: Int, c: ModelConfig) raises:
+    def __init__(
+        out self, g: GGUFFile, i: Int, c: ModelConfig, threads: Int
+    ) raises:
         var p = "blk." + String(i) + "."
         var kvd = c.kv_dim()
         self.attn_norm = _load_vector(g, p + "attn_norm.weight", c.hidden)
@@ -743,13 +745,21 @@ struct Layer(Movable):
             self.bq = Floats(0)
             self.bk = Floats(0)
             self.bv = Floats(0)
-        self.wq = _load_matrix(g, p + "attn_q.weight", c.hidden, c.hidden)
-        self.wk = _load_matrix(g, p + "attn_k.weight", kvd, c.hidden)
-        self.wv = _load_matrix(g, p + "attn_v.weight", kvd, c.hidden)
-        self.wo = _load_matrix(g, p + "attn_output.weight", c.hidden, c.hidden)
-        self.wg = _load_matrix(g, p + "ffn_gate.weight", c.ffn, c.hidden)
-        self.wu = _load_matrix(g, p + "ffn_up.weight", c.ffn, c.hidden)
-        self.wd = _load_matrix(g, p + "ffn_down.weight", c.hidden, c.ffn)
+        self.wq = _load_matrix(
+            g, p + "attn_q.weight", c.hidden, c.hidden, threads
+        )
+        self.wk = _load_matrix(g, p + "attn_k.weight", kvd, c.hidden, threads)
+        self.wv = _load_matrix(g, p + "attn_v.weight", kvd, c.hidden, threads)
+        self.wo = _load_matrix(
+            g, p + "attn_output.weight", c.hidden, c.hidden, threads
+        )
+        self.wg = _load_matrix(
+            g, p + "ffn_gate.weight", c.ffn, c.hidden, threads
+        )
+        self.wu = _load_matrix(g, p + "ffn_up.weight", c.ffn, c.hidden, threads)
+        self.wd = _load_matrix(
+            g, p + "ffn_down.weight", c.hidden, c.ffn, threads
+        )
 
 
 def _load_vector(g: GGUFFile, name: String, n: Int) raises -> Floats:
@@ -762,7 +772,7 @@ def _load_vector(g: GGUFFile, name: String, n: Int) raises -> Floats:
 
 
 def _load_matrix(
-    g: GGUFFile, name: String, rows: Int, cols: Int
+    g: GGUFFile, name: String, rows: Int, cols: Int, threads: Int
 ) raises -> PackedMatrix:
     var t = g.tensor(name)
     if t.ne0 != cols or t.n_rows() != rows:
@@ -779,7 +789,9 @@ def _load_matrix(
         )
     check_matrix_type(t)
     g.map.populate(t.data_offset, t.n_bytes)
-    var pm = PackedMatrix(g.data_addr(t), t.n_bytes, t.ggml_type, rows, cols)
+    var pm = PackedMatrix(
+        g.data_addr(t), t.n_bytes, t.ggml_type, rows, cols, threads
+    )
     g.map.drop(t.data_offset, t.n_bytes)
     return pm^
 
@@ -934,10 +946,10 @@ struct DiffusionLM(DenoisingModel, Movable):
         check_embedding_type(self.embd)
         self.layers = List[Layer](capacity=c.n_layers)
         for i in range(c.n_layers):
-            self.layers.append(Layer(self.gguf, i, c))
+            self.layers.append(Layer(self.gguf, i, c, threads))
         self.out_norm = _load_vector(self.gguf, "output_norm.weight", c.hidden)
         self.output = _load_matrix(
-            self.gguf, "output.weight", c.vocab, c.hidden
+            self.gguf, "output.weight", c.vocab, c.hidden, threads
         )
         var L = max_tokens
         self.x = Floats(L * c.hidden)
@@ -1091,7 +1103,7 @@ struct DiffusionLM(DenoisingModel, Movable):
                 c.eps,
                 self.threads,
             )
-            quantize_acts(self.xn.ptr(), rows, d, self.qa_h)
+            quantize_acts(self.xn.ptr(), rows, d, self.qa_h, self.threads)
             self.timings.gemm_ns += _timed_gemm(
                 self.layers[li].wq,
                 self.qa_h,
@@ -1144,7 +1156,7 @@ struct DiffusionLM(DenoisingModel, Movable):
                 n_keys,
             )
             self.timings.attn_ns += Int(perf_counter_ns() - ta)
-            quantize_acts(self.att.ptr(), rows, d, self.qa_h)
+            quantize_acts(self.att.ptr(), rows, d, self.qa_h, self.threads)
             self.timings.gemm_ns += _timed_gemm(
                 self.layers[li].wo,
                 self.qa_h,
@@ -1172,7 +1184,7 @@ struct DiffusionLM(DenoisingModel, Movable):
                 c.eps,
                 self.threads,
             )
-            quantize_acts(self.xn.ptr(), rows, d, self.qa_h)
+            quantize_acts(self.xn.ptr(), rows, d, self.qa_h, self.threads)
             self.timings.gemm_ns += _timed_gemm(
                 self.layers[li].wg,
                 self.qa_h,
@@ -1190,7 +1202,7 @@ struct DiffusionLM(DenoisingModel, Movable):
                 self.threads,
             )
             silu_mul(self.g.ptr(), self.u.ptr(), rows * c.ffn, self.threads)
-            quantize_acts(self.g.ptr(), rows, c.ffn, self.qa_f)
+            quantize_acts(self.g.ptr(), rows, c.ffn, self.qa_f, self.threads)
             self.timings.gemm_ns += _timed_gemm(
                 self.layers[li].wd,
                 self.qa_f,
@@ -1216,7 +1228,7 @@ struct DiffusionLM(DenoisingModel, Movable):
             c.eps,
             self.threads,
         )
-        quantize_acts(self.xn.ptr(), n_out, d, self.qa_h)
+        quantize_acts(self.xn.ptr(), n_out, d, self.qa_h, self.threads)
         var th = perf_counter_ns()
         pgemm(self.output, self.qa_h, n_out, logits, c.vocab, self.threads)
         var t_end = perf_counter_ns()
