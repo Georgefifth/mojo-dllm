@@ -1,4 +1,4 @@
-"""bench/engines/_http.py: the small standard-library HTTP client the vLLM (and later SGLang) engines share.
+"""bench/engines/_http.py: the small standard-library HTTP client the vLLM and SGLang engines share.
 
 Every test talks to the fake server in fake_vllm_server.py on 127.0.0.1. Nothing leaves the machine.
 """

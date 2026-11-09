@@ -1,4 +1,4 @@
-"""A small HTTP client for engines that talk to a server someone else started (vLLM now, SGLang next).
+"""A small HTTP client for engines that talk to a server someone else started (the vLLM and SGLang engines).
 
 Standard library only (`urllib`), so the frozen environment needs nothing new. What it decides, and why:
 
