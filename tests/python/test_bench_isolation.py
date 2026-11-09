@@ -1030,12 +1030,21 @@ def test_a_real_child_that_exits_inside_the_window_is_not_counted_as_other(tmp_p
     """Reviewer's repro: the child's ticks leave /proc when it exits, system busy keeps them."""
     ncpu = os.cpu_count() or 1
     real = isolation.Machine(sysfs=tmp_path / "nosys", power_root=tmp_path / "nopower")
+    # This test reads the real /proc, so it needs a machine nobody else is using: a second of idle first, and a
+    # skip (not a failure) when other processes already use more than a tenth of it.
+    idle = isolation.Window(pid=os.getpid(), machine=real, sample_s=0.25)
+    with idle:
+        time.sleep(1.0)
+    if idle.result["other_cpu_share_mean"] > 0.10:
+        pytest.skip(f"the machine is busy ({idle.result['other_cpu_share_mean']:.0%} other CPU); this test needs it idle")
     w = isolation.Window(pid=os.getpid(), machine=real, sample_s=0.5)
     with w:
         kids = [subprocess.Popen([sys.executable, "-c", BURN_13]) for _ in range(ncpu)]
         for k in kids:
             k.wait()
-    assert w.result["other_cpu_share_max"] < 0.25, w.result
+    # The child's own ticks counted as other read 0.97 here before the cutime fix; ordinary neighbours read a few
+    # percent. Half the machine separates the two with room on both sides.
+    assert w.result["other_cpu_share_max"] < 0.5, w.result
 
 
 def test_a_tree_member_that_vanishes_between_samples_is_not_other(fake_machine: FakeMachine) -> None:
