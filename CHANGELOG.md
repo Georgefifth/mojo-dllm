@@ -58,8 +58,12 @@ semantic versioning (0.y: minor bumps may break things).
   layer-scalar regions, the tied Q6_K head and the soft cap. `mojo-dllm logits`
   runs it. A numpy forward pass written from the llama.cpp branch
   (`scripts/dg_numpy.py`) checks it on a tiny fixture: most rows agree to 2e-7,
-  a few to 7e-3 where an int8 rounding step lands on a tie. The prompt K/V cache
-  path, self-conditioning and the real-file parity record follow in #64.
+  a few to 7e-3 where an int8 rounding step lands on a tie. `prefill(prompt)`
+  runs the prompt once and keeps every layer's keys and values; `step(canvas,
+  logits)` computes only the canvas rows against them, and equals the unified
+  pass bit for bit on the tiny fixture, including prompts longer than the
+  sliding window. Neither is wired to the command line yet. Self-conditioning
+  and the real-file parity record follow in #64.
 - Fused elementwise kernels on the GPU: the residual add, the RMSNorm and the
   activation quantization run as one launch (three per layer boundary plus
   the first norm), and `silu(g) * u` is quantized in the same launch as the
