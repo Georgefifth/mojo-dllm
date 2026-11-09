@@ -324,6 +324,63 @@ Discordant counts problems only the baseline solved / only the arm solved. Time 
 Evidence: `bench/eval/2026-10-29-baseline-vs-dualcache.json`, `bench/eval/2026-10-29-baseline-vs-threshold09.json`, `bench/eval/2026-10-29-baseline-vs-dualcache-first50.json`, `bench/eval/2026-10-29-baseline-vs-threshold09-first50.json`.
 <!-- eval:end -->
 
+### The authors' own code (Transformers arm)
+
+`bench/eval_engine.py run --engine hf` answers the same 200 problems through the sampling code the model authors
+publish: `generate` from `generate.py` in a checkout of [ML-GSAI/LLaDA](https://github.com/ML-GSAI/LLaDA) for
+LLaDA, and `diffusion_generate` from the remote code of
+[Dream-org/Dream-v0-Instruct-7B](https://huggingface.co/Dream-org/Dream-v0-Instruct-7B) for Dream. The adapter
+imports the LLaDA file from your checkout and never copies it (the repository has no license file).
+
+**This arm runs different weights.** The llama.cpp and mojo-dllm arms load the Q4_K_M GGUF. The Transformers arm
+loads the authors' bf16 safetensors, or a bitsandbytes 4-bit (nf4) copy of them with `--quant 4bit`. An accuracy
+difference between the arms therefore includes quantization as well as any difference between the
+implementations, and `eval_gsm8k.py compare` refuses such a pair unless you pass `--across-weights`. The output
+then holds both model names and `"weights_differ": true`.
+
+Like-for-like settings: temperature 0, steps equal to the generation length, block length 32 and low-confidence
+remasking for LLaDA, entropy remasking for Dream (which has no blocks). The Dream README example uses temperature
+0.2, top_p 0.95 and 512 steps, and the library default algorithm is `origin`; the arm departs from that, and the
+`flags` of every row say so. `version` records the model repository's commit sha (`--model-revision`, a full
+40-character sha; `null` when you give none, and then the weights and the remote code are unpinned), the LLaDA
+checkout's commit, and the `transformers`, `torch` and `bitsandbytes` versions. The Python sampling loop is not a
+speed baseline; read accuracy from this arm, not seconds.
+
+The two READMEs pin different environments (LLaDA: `transformers==4.38.2`; Dream: `transformers==4.46.2` and
+`torch==2.5.1`), so each model gets its own virtual environment. The repository's frozen environment never
+installs them. The runner only needs the standard library besides the model libraries, so run it with the
+environment's own interpreter:
+
+```bash
+# LLaDA
+uv venv ~/.cache/mojo-dllm-hf/llada --python 3.12
+uv pip install --python ~/.cache/mojo-dllm-hf/llada/bin/python torch transformers==4.38.2 accelerate bitsandbytes
+git clone https://github.com/ML-GSAI/LLaDA ~/src/LLaDA
+REV=$(curl -s https://huggingface.co/api/models/GSAI-ML/LLaDA-8B-Instruct | jq -r .sha)
+~/.cache/mojo-dllm-hf/llada/bin/python bench/eval_engine.py run --engine hf --model GSAI-ML/LLaDA-8B-Instruct \
+    --model-revision "$REV" --llada-repo ~/src/LLaDA --quant 4bit --device gpu --arm hf-llada-4bit --limit 50
+
+# Dream
+uv venv ~/.cache/mojo-dllm-hf/dream --python 3.12
+uv pip install --python ~/.cache/mojo-dllm-hf/dream/bin/python torch==2.5.1 transformers==4.46.2 accelerate bitsandbytes
+REV=$(curl -s https://huggingface.co/api/models/Dream-org/Dream-v0-Instruct-7B | jq -r .sha)
+~/.cache/mojo-dllm-hf/dream/bin/python bench/eval_engine.py run --engine hf --model Dream-org/Dream-v0-Instruct-7B \
+    --model-revision "$REV" --quant 4bit --device gpu --arm hf-dream-4bit --limit 50
+
+python3 bench/eval_gsm8k.py compare baseline hf-llada-4bit --across-weights
+```
+
+The weights are 14.93 GiB (LLaDA) and 14.19 GiB (Dream) of safetensors, so one model fits a nearly full disk and
+both do not. The adapter loads the model before the preflight and the first problem, and refuses a model that is
+not on the requested device (a model that fell back to the CPU would still answer, slowly).
+
+**Not done yet.** The tests run against stubs: no weights were downloaded and no GPU was used for this arm. The
+memory-fit spike (issue #178, scope item 1: peak RAM, peak VRAM and seconds per step for bf16 on the CPU and for
+4-bit on the GPU) and the GSM8K arm itself (scope item 4) have not run, because the laptop had 4 GB of disk free
+and has to stay quiet for the timed benchmark runs. Whether 4-bit LLaDA fits 6 GB of VRAM is unmeasured, and so
+is the CPU step time. There are no Transformers rows in this document until the arm is committed under
+`bench/eval/`.
+
 ## Limits of this evidence
 
 - One machine: a 13th Gen Intel i5-13420H laptop for the CPU tables, with an

@@ -512,8 +512,9 @@ def test_a_checkout_that_is_not_a_git_repository_is_refused_before_any_load(rig:
     assert rig.gen_calls() == []
 
 
-def test_4bit_on_the_cpu_is_refused(rig: Rig) -> None:
-    _refused(rig, "4bit", quant="4bit", device="cpu")
+def test_4bit_on_the_cpu_is_refused(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setitem(VERSIONS, "bitsandbytes", "0.43.1")     # installed, so only the device can refuse
+    _refused(rig, "--quant 4bit needs --device gpu", quant="4bit", device="cpu")
 
 
 def test_4bit_without_bitsandbytes_is_refused(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:

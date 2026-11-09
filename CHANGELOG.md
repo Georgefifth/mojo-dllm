@@ -8,6 +8,18 @@ semantic versioning (0.y: minor bumps may break things).
 
 ### Added
 
+- `bench/engines/hf.py`, an engine for `bench/eval_engine.py` that runs GSM8K through the authors' own sampling
+  code (issue #178): `generate` from a checkout of ML-GSAI/LLaDA (`--llada-repo`, imported and never copied) and
+  `diffusion_generate` from Dream's remote code, at temperature 0 with steps equal to the generation length.
+  Options: `--hf-model`, `--quant none|4bit`, `--model-revision` and the shared `--device`. Each row's `version`
+  records the model repository's commit sha (`null` when none was given), the LLaDA checkout's commit and the
+  `transformers`, `torch` and `bitsandbytes` versions; `flags` records where a Dream run departs from its README.
+  The adapter imports `torch` and `transformers` only when it loads a model, so the frozen environment and CI
+  never need them. `eval_gsm8k.py compare --across-weights` compares arms that ran different model files and writes
+  both names and `weights_differ` (`compare` writes `models` and `weights_differ` on every run now, and still
+  refuses different models without the flag). `docs/benchmarks.md` explains why the arm's accuracy includes
+  quantization and how to set up one environment per model. The memory-fit spike and the GSM8K arm of #178 have
+  not run.
 - `scripts/capped.sh` runs a command in its own memory-capped systemd scope: a hard cap, no swap and a
   whole-scope kill on an OOM, so a job that outgrows the machine dies alone instead of taking its terminal with
   it. It refuses to start when less memory is available than the job needs or when the user manager cannot
