@@ -686,7 +686,9 @@ Prometheus metrics (`python/sglang/srt/observability/metrics_collector.py`) have
 counter, `sglang:cuda_graph_passes_total`, is server-wide and counts passes by CUDA-graph mode, so a change of it across
 one request is not that request's denoising steps. Pull request sgl-project/sglang#48675 ("Expose cumulative
 request-level forward metrics", which would add `meta_info.dllm_metrics` to `/generate`) was open and unmerged when I
-read it on 2026-11-09, and SGLang's own benchmark records `--denoising-steps` as metadata only. So `forward_passes` is
+read it on 2026-11-09, and its description opens with "dLLM responses do not report how many model forwards a request
+uses". SGLang's own benchmark records `--denoising-steps` as metadata only. I read the metrics collector at both `main`
+and `v0.5.23`, and neither has a dLLM metric. So `forward_passes` is
 null in every row, `flags.forward_passes_measured` is false, and the engine never reads `/metrics` and never infers a
 count. `--steps`, `--block-length` and `--schedule` do not reach the server (`--dllm-algorithm-config` sets the step
 rule when the server starts), and a `--steps` different from `--gen-length` is refused.
