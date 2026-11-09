@@ -5,6 +5,7 @@ Every test talks to the fake server in fake_vllm_server.py on 127.0.0.1. Nothing
 
 from __future__ import annotations
 
+import socket
 import sys
 import time
 from pathlib import Path
@@ -179,3 +180,74 @@ def test_environment_proxies_are_used_when_asked(server: FakeServer, monkeypatch
 def test_get_text_returns_the_body_as_text(server: FakeServer) -> None:
     server.state.metrics = "a 1\nb 2\n"
     assert client(server).get_text("/metrics") == "a 1\nb 2\n"
+
+
+def test_the_servers_message_is_the_error_text_alone(server: FakeServer) -> None:
+    server.state.mode = "http400"
+    with pytest.raises(_http.HttpError) as e:
+        client(server).post_json("/v1/chat/completions", {"model": "dgemma"})
+    assert str(e.value) == f"POST {server.url}/v1/chat/completions answered HTTP 400: max_tokens is too large: 9999"
+
+
+def test_a_trailing_slash_on_the_base_url_does_not_double_the_slash(server: FakeServer) -> None:
+    _http.HttpClient(server.url + "/", timeout_s=5).get_json("/v1/models")
+    assert [r["path"] for r in server.state.requests] == ["/v1/models"]
+
+
+@pytest.mark.parametrize("suffix", ["/?x=1", "#frag", "?x=1"])
+def test_a_base_url_with_a_query_or_fragment_is_refused(server: FakeServer, suffix: str) -> None:
+    with pytest.raises(EngineError, match="query or fragment"):
+        _http.HttpClient(server.url + suffix, timeout_s=1)
+
+
+def test_clean_drops_control_characters_and_keeps_printable_text_and_newlines() -> None:
+    assert _http.clean("a\x1b[2Jb\x07c\rd\ne\tf\u202eg h\u00e9") == "a[2Jbcd\nefg h\u00e9"
+
+
+def test_clean_caps_the_length() -> None:
+    out = _http.clean("z" * 1000)
+    assert out == "z" * 400 + "..." and _http.clean("z" * 400) == "z" * 400
+
+
+def test_a_servers_error_text_cannot_inject_terminal_escapes_and_is_capped(server: FakeServer) -> None:
+    server.state.mode = "escape"
+    with pytest.raises(_http.HttpError) as e:
+        client(server).post_json("/v1/chat/completions", {"model": "dgemma"})
+    msg = str(e.value)
+    assert not {"\x1b", "\x07", "\r"} & set(msg)
+    assert "bad" in msg and "\nnext" in msg
+    assert len(msg.split("HTTP 500: ", 1)[1]) <= 403
+
+
+def test_a_plain_text_error_body_cannot_inject_escapes_either(server: FakeServer) -> None:
+    server.state.mode = "http503esc"
+    with pytest.raises(_http.HttpError) as e:
+        client(server).post_json("/v1/chat/completions", {"model": "dgemma"})
+    assert "\x1b" not in str(e.value) and "down[31m!" in str(e.value)
+
+
+def test_a_non_json_body_is_quoted_without_raw_control_characters(server: FakeServer) -> None:
+    server.state.mode = "notjson"
+    with pytest.raises(EngineError) as e:
+        client(server).post_json("/v1/chat/completions", {"model": "dgemma"})
+    assert "\x1b" not in str(e.value)
+
+
+def test_headers_trickled_past_the_deadline_time_out(server: FakeServer) -> None:
+    # a header line every 0.25 s and no end of headers: no socket read waits 0.6 s, the answer never completes
+    server.state.mode = "header_trickle"
+    t0 = time.monotonic()
+    with pytest.raises(EngineError, match="timed out"):
+        client(server, timeout_s=0.6).post_json("/v1/chat/completions", {"model": "dgemma"})
+    assert time.monotonic() - t0 < 2.0
+
+
+def test_a_server_that_accepts_and_never_answers_times_out() -> None:
+    with socket.socket() as srv:
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(1)
+        url = f"http://127.0.0.1:{srv.getsockname()[1]}"
+        t0 = time.monotonic()
+        with pytest.raises(EngineError, match="timed out"):
+            _http.HttpClient(url, timeout_s=0.5).get_json("/v1/models")
+        assert time.monotonic() - t0 < 2.0

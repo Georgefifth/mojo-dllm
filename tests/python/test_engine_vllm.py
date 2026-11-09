@@ -23,6 +23,7 @@ import eval_engine  # noqa: E402
 import eval_gsm8k  # noqa: E402
 from engines import EngineError, GenConfig  # noqa: E402
 from engines import vllm as vllm_engine  # noqa: E402
+from engines import _http  # noqa: E402
 from fake_vllm_server import ANSWER, FakeServer  # noqa: E402
 
 RECORD_KEYS = {"index", "gold", "pred", "correct", "forward_passes", "generate_s", "stopped_early", "text",
@@ -33,13 +34,15 @@ MODEL = CHECKPOINT
 
 class Rig(SimpleNamespace):
     def argv(self, *extra: str, arm: str = "arm", limit: int = 2, quant: str | None = "fp8-dynamic",
-             served: str | None = "dgemma", model: str = MODEL) -> list[str]:
+             served: str | None = "dgemma", model: str = MODEL, seqs: str | None = "1") -> list[str]:
         argv = ["run", "--engine", "vllm", "--model", model, "--arm", arm, "--device", "cpu",
                 "--gen-length", "256", "--limit", str(limit), "--allow-battery", "--base-url", self.server.url]
         if served is not None:
             argv += ["--served-model", served]
         if quant is not None:
             argv += ["--quantization", quant]
+        if seqs is not None:
+            argv += ["--max-num-seqs", seqs]
         return argv + list(extra)
 
     def run(self, *extra: str, **kw) -> int:
@@ -51,7 +54,7 @@ class Rig(SimpleNamespace):
 
     def engine(self, **kw) -> vllm_engine.VLLM:
         args = dict(base_url=self.server.url, served_model="dgemma", checkpoint=None, quantization="fp8-dynamic",
-                    attention_backend=None, chat_template=None, use_env_proxy=False)
+                    attention_backend=None, chat_template=None, use_env_proxy=False, max_num_seqs=1)
         args.update(kw)
         return vllm_engine.VLLM(SimpleNamespace(**args))
 
@@ -195,7 +198,8 @@ def test_flags_say_remote_and_which_fields_are_declared_and_not_verified(rig: Ri
     e, cfg = rig.ready(attention_backend="FLASH_ATTN")
     f = e.flags(cfg)
     assert f["engine"] == "vllm" and f["server"] == "remote"
-    assert f["declared_not_verified"] == ["attention_backend", "quantization"]
+    assert f["declared_not_verified"] == ["attention_backend", "max_num_seqs", "quantization"]
+    assert f["max_num_seqs"] == 1
     assert f["temperature"] == 0.0 and f["gen_length"] == 256 and f["device"] == "cpu"
     assert f["served_model"] == "dgemma" and f["quantization"] == "fp8-dynamic"
     assert f["chat_template"] == {"applied_by": "server", "declared": None, "verified": False}
@@ -411,3 +415,112 @@ def test_generate_s_covers_the_request_only(rig: Rig) -> None:
 def test_a_step_count_the_server_cannot_take_is_refused(rig: Rig) -> None:
     with pytest.raises(SystemExit, match="--steps"):
         rig.engine().check(rig.cfg(steps=48))
+
+
+# review fixes: one client, sanitised server text, label against root, the metrics status, the version string
+
+
+def test_steps_are_refused_without_a_declared_max_num_seqs_of_one(rig: Rig) -> None:
+    rig.server.state.metrics = "live"
+    refused(rig, "--max-num-seqs 1", seqs=None)
+    assert rig.server.state.posts() == []
+
+
+def test_steps_are_refused_when_the_declared_max_num_seqs_is_four(rig: Rig) -> None:
+    rig.server.state.metrics = "live"
+    refused(rig, "--max-num-seqs 1", seqs="4")
+
+
+def test_the_declared_max_num_seqs_is_not_needed_when_the_server_has_no_counter(rig: Rig) -> None:
+    assert rig.run(limit=1, seqs=None) == 0
+    assert rig.rows()[0]["forward_passes"] is None
+
+
+def test_max_num_seqs_is_recorded_in_the_flags_when_declared(rig: Rig) -> None:
+    rig.server.state.metrics = "live"
+    rig.run(limit=1)
+    f = rig.rows()[0]["flags"]
+    assert f["max_num_seqs"] == 1 and "max_num_seqs" in f["declared_not_verified"]
+
+
+def test_a_non_integer_max_num_seqs_is_rejected_by_the_parser(rig: Rig) -> None:
+    with pytest.raises(SystemExit):
+        rig.run("--max-num-seqs", "many", seqs=None)
+
+
+def test_the_counter_is_read_under_its_source_name_and_its_total_name() -> None:
+    assert vllm_engine.parse_steps_total('vllm:diffusion_num_denoising_steps{engine="0"} 5.0\n') == 5
+    assert vllm_engine.parse_steps_total('vllm:diffusion_num_denoising_steps_total{engine="0"} 6.0\n') == 6
+
+
+def test_both_names_of_one_counter_are_not_added_together() -> None:
+    text = "vllm:diffusion_num_denoising_steps_total 6.0\nvllm:diffusion_num_denoising_steps 6.0\n"
+    assert vllm_engine.parse_steps_total(text) == 6
+
+
+def test_a_page_without_the_counter_gives_none() -> None:
+    assert vllm_engine.parse_steps_total("vllm:diffusion_num_denoising_steps_created 1.7e9\n") is None
+
+
+@pytest.mark.parametrize("status", [403, 500, 401])
+def test_a_metrics_error_other_than_404_is_refused_not_read_as_an_absent_counter(rig: Rig, status: int) -> None:
+    rig.server.state.metrics_status = status
+    refused(rig, f"HTTP {status}")
+
+
+def test_an_empty_version_string_is_refused(rig: Rig) -> None:
+    rig.server.state.version = {"version": ""}
+    refused(rig, "/version")
+
+
+def test_a_model_label_that_is_not_the_servers_root_or_id_is_refused(rig: Rig) -> None:
+    refused(rig, "google/diffusiongemma-26B-A4B-it", model="RedHatAI/diffusiongemma-26B-A4B-it-FP8-dynamic")
+    assert rig.server.state.posts() == []
+
+
+def test_the_message_for_a_label_mismatch_names_the_label_and_the_root(rig: Rig) -> None:
+    with pytest.raises(SystemExit) as e:
+        rig.run(model="other/model")
+    assert "other/model" in str(e.value) and CHECKPOINT in str(e.value) and "--model" in str(e.value)
+
+
+def test_a_model_label_equal_to_the_servers_id_is_accepted(rig: Rig) -> None:
+    assert rig.run(limit=1, model="dgemma") == 0
+    assert rig.rows()[0]["model"] == "dgemma|fp8-dynamic"
+
+
+def test_flags_record_that_the_label_matches_the_server(rig: Rig) -> None:
+    e, cfg = rig.ready()
+    assert e.flags(cfg)["model_matches_server"] is True
+
+
+def test_a_server_without_a_root_cannot_confirm_the_label(rig: Rig) -> None:
+    rig.server.state.models = [{"id": "dgemma"}]
+    e, cfg = rig.ready()
+    assert e.flags(cfg)["model_matches_server"] is None
+
+
+def test_model_ids_the_server_reports_cannot_inject_escapes(rig: Rig) -> None:
+    rig.server.state.models = [{"id": "a\x1b[31mred", "root": "x"}, {"id": "b\rc", "root": "y"}]
+    with pytest.raises(SystemExit) as e:
+        rig.run()
+    assert "\x1b" not in str(e.value) and "\r" not in str(e.value) and "a[31mred" in str(e.value)
+
+
+def test_an_http_error_message_with_escapes_is_clean_through_the_runner(rig: Rig) -> None:
+    rig.server.state.mode = "escape"
+    with pytest.raises(SystemExit) as e:
+        rig.run()
+    assert "\x1b" not in str(e.value) and "\x07" not in str(e.value)
+
+
+def test_a_wrong_echoed_model_name_is_cleaned_and_capped(rig: Rig) -> None:
+    rig.server.state.mode = "wrong_echo"
+    e, cfg = rig.ready()
+    with pytest.raises(EngineError) as ex:
+        e.generate("q", cfg)
+    assert len(str(ex.value)) < 300
+
+
+def test_the_http_helper_is_shared(rig: Rig) -> None:
+    assert vllm_engine.HttpClient is _http.HttpClient

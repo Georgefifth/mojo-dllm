@@ -28,6 +28,7 @@ class State:
         self.mode = "ok"
         self.answer = ANSWER
         self.models_status = 200
+        self.metrics_status = 200                           # a status other than 200 answers /metrics with an error
         self.requests: list[dict] = []
         self.lock = threading.Lock()
 
@@ -77,6 +78,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self._send(st.version, {"detail": "Not Found"})
             return self._send(200, st.version)
         if route == "/metrics":
+            if st.metrics_status != 200:
+                return self._send(st.metrics_status, {"error": {"message": "metrics are down"}})
             if st.metrics is None:
                 return self._send(404, {"detail": "Not Found"})
             text = st.metrics_text() if st.metrics == "live" else st.metrics
@@ -96,6 +99,21 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(500, {"error": {"message": "CUDA out of memory in the denoiser", "type": "InternalServerError"}})
         if mode == "http400":
             return self._send(400, {"error": {"message": "max_tokens is too large: 9999", "type": "BadRequestError"}})
+        if mode == "escape":
+            nasty = "\x1b[2J\x1b]0;owned\x07bad\rline\nnext " + "y" * 2000
+            return self._send(500, {"error": {"message": nasty}})
+        if mode == "header_trickle":
+            self.send_response_only(200)
+            try:
+                for _ in range(12):
+                    self.wfile.write(b"X-Slow: 1\r\n")
+                    self.wfile.flush()
+                    time.sleep(0.25)
+            except OSError:
+                pass
+            return
+        if mode == "http503esc":
+            return self._send(503, b"down\x1b[31m!", ctype="text/plain")
         if mode == "http503text":
             return self._send(503, b"upstream is restarting", ctype="text/plain")
         if mode == "redirect":
@@ -120,7 +138,7 @@ class Handler(BaseHTTPRequestHandler):
         if mode == "huge":
             return self._send(200, b"x" * (6 * 1024 * 1024), length=False)
         if mode == "notjson":
-            return self._send(200, b"<html>gateway</html>", ctype="text/html")
+            return self._send(200, b"<html>gateway\x1b[31m</html>", ctype="text/html")
         if mode == "cookie":
             self.send_response(200)
             self.send_header("Set-Cookie", "session=abc123")
