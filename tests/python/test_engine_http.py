@@ -114,7 +114,7 @@ def test_a_response_over_the_size_bound_is_refused(server: FakeServer) -> None:
 
 def test_a_declared_length_over_the_bound_is_refused_before_reading(server: FakeServer) -> None:
     server.state.metrics = "x" * 5000
-    with pytest.raises(EngineError, match="larger than"):
+    with pytest.raises(EngineError, match="declares a body of 5000 bytes, larger than"):
         client(server, max_bytes=1000).get_text("/metrics")
 
 
