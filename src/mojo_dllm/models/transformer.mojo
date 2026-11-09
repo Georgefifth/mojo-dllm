@@ -254,8 +254,7 @@ struct ModelConfig(Copyable, ImplicitlyCopyable, Movable):
             raise Error(
                 GEMMA_ARCH
                 + " does not run on this model: `logits` runs it on the CPU,"
-                " and `run` waits for the gemma4 tokenizer (#62) and the"
-                " denoiser (#65)"
+                " and `run` waits for the generation loop (#64)"
             )
 
 

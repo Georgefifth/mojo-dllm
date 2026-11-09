@@ -89,7 +89,10 @@ least 1`, `needs --visual`, or `needs an integer`.
 ## `tokenize`
 
 Prints the token ids of the chat-formatted prompt, the same ids `run` feeds the
-model. Useful to compare against `llama-tokenize`.
+model. Useful to compare against `llama-tokenize`. For a `diffusion-gemma` file
+the prompt is the file's chat template: `<bos>`, a user turn and an open model
+turn, which gives one BOS token (id 2). It reads the tokenizer arrays of the
+file and none of its weights, so it runs on a file too big to load.
 
 ## `inspect`
 
