@@ -239,7 +239,7 @@ def rig(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Rig:
 def test_hf_is_registered_and_satisfies_the_protocol() -> None:
     assert engines.get("hf") is hf.HF
     assert "hf" in engines.names()
-    args = SimpleNamespace(hf_model=None, llada_repo=None, quant="none", model_revision=None)
+    args = SimpleNamespace(hf_model=None, llada_repo=None, quant="none", model_revision=None, allow_unpinned=False)
     assert isinstance(hf.HF(args), engines.Engine)
 
 
@@ -326,7 +326,8 @@ def test_version_records_the_revision_the_checkout_and_the_libraries(rig: Rig) -
     assert rig.run() == 0
     v = json.loads(rig.rows()[0]["version"])
     assert v == {"model_revision": SHA, "llada_commit": _git(rig.repo, "rev-parse", "HEAD"),
-                 "transformers": "4.38.2", "torch": "2.2.0", "bitsandbytes": None}
+                 "transformers": "4.38.2", "torch": "2.2.0", "bitsandbytes": None,
+                 "model_source": "hub", "model_dir": None, "model_revision_verified": True}
     assert len(v["llada_commit"]) == 40
 
 
@@ -852,7 +853,7 @@ def test_ram_fails_closed_for_an_unknown_repository_and_a_directory_without_weig
 def test_an_unknown_model_size_fails_the_preflight_memory_check(rig: Rig, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(hf.HF, "ram_gb_after_load", REAL_RAM_GB)
     with pytest.raises(SystemExit) as e:
-        rig.run(family="someone/LLaDA-custom")
+        rig.run("--llada-repo", str(rig.repo), family="someone/LLaDA-custom", llada_repo=False)
     assert "memory" in str(e.value) and rig.rows() == []
 
 

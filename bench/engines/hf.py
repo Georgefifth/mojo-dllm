@@ -48,6 +48,12 @@ LLADA_MASK_ID = 126336         # generate.py's default and the id its README ass
 LLADA_PARAMS = ("attention_mask", "steps", "gen_length", "block_length", "temperature", "cfg_scale", "remasking")
 README_EXAMPLE = {"temperature": 0.2, "top_p": 0.95, "steps": 512, "alg": "entropy", "alg_temp": 0.0}
 SHA_RE = re.compile(r"[0-9a-f]{40}")
+GIB = 1.073741824              # GB per GiB
+# Sum of the .safetensors of each repository on the Hugging Face API, 2026-11-09 (issue #178), in GiB.
+WEIGHTS_GIB = {"GSAI-ML/LLaDA-8B-Instruct": 14.93, "Dream-org/Dream-v0-Instruct-7B": 14.19}
+WORKING_GB = 3.0               # the Python loop's working memory (LLaDA's float64 Gumbel noise is about 0.5 GB a tensor)
+BF16_RESIDENT = 1.25           # resident set of a bf16 load over the weights' size
+NF4_RATIO = 3.5                # bf16 weights over their 4-bit size
 
 
 @dataclass(frozen=True)
@@ -88,7 +94,7 @@ def load_model(spec: Spec):
 
     if spec.device == "gpu" and not torch.cuda.is_available():
         raise EngineError("--device gpu but torch.cuda.is_available() is false: this is not a CUDA run")
-    kw: dict = dict(trust_remote_code=True, revision=spec.revision)
+    kw: dict = dict(trust_remote_code=True, revision=spec.revision, low_cpu_mem_usage=True)
     if spec.quant == "4bit":
         kw["quantization_config"] = transformers.BitsAndBytesConfig(
             load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_compute_dtype=torch.bfloat16)
@@ -188,6 +194,8 @@ class DreamBackend:
                                             return_dict_in_generate=True, steps=cfg.steps, temperature=0.,
                                             alg="entropy", alg_temp=0.)
         text = self.tokenizer.decode(out.sequences[0][ids.shape[1]:].tolist())
+        if not self.tokenizer.eos_token:
+            raise EngineError("the Dream tokenizer has no end-of-text token to cut the answer at")
         return text.split(self.tokenizer.eos_token)[0]
 
 
@@ -205,8 +213,10 @@ class HF:
         self.llada_repo = pathlib.Path(args.llada_repo).expanduser() if args.llada_repo else None
         self.quant = args.quant
         self.revision = args.model_revision
+        self.allow_unpinned = args.allow_unpinned
         self.family: str | None = None
         self.backend = None
+        self._local: pathlib.Path | None = None
 
     @staticmethod
     def add_arguments(parser: argparse.ArgumentParser) -> None:
@@ -217,12 +227,29 @@ class HF:
                             help="a checkout of github.com/ML-GSAI/LLaDA; its generate.py is imported, never copied")
         parser.add_argument("--quant", choices=["none", "4bit"], default="none",
                             help="none: bf16; 4bit: bitsandbytes nf4 with bf16 compute (GPU only)")
+        parser.add_argument("--allow-unpinned", action="store_true",
+                            help="run a Hugging Face repository without --model-revision. `trust_remote_code` then "
+                                 "executes whatever Python the default branch holds today; the rows say `unpinned`")
         parser.add_argument("--model-revision", default=None,
                             help="the model repository's 40-character commit sha; recorded in `version`. With none "
                                  "the weights and remote code are unpinned and `version` records null")
 
     def _model_id(self, cfg: GenConfig) -> str:
         return self.hf_model or cfg.model
+
+    def _local_dir(self, cfg: GenConfig) -> pathlib.Path | None:
+        path = pathlib.Path(self._model_id(cfg)).expanduser()
+        return path if path.is_dir() else None
+
+    def _unpinned(self, cfg: GenConfig) -> bool:
+        """A hub repository loaded without a revision. A local directory is not on the hub: nothing to pin."""
+        return self.revision is None and self._local_dir(cfg) is None
+
+    def model_name(self, cfg: GenConfig) -> str:
+        """The `model` of every row: what `compare` reads to decide whether the weights differ, so the
+        quantization is part of it."""
+        name = pathlib.Path(cfg.model).name
+        return name + "|4bit" if self.quant == "4bit" else name
 
     def check(self, cfg: GenConfig) -> None:
         if cfg.device not in ("cpu", "gpu"):
@@ -232,9 +259,15 @@ class HF:
         if self.revision is not None and not SHA_RE.fullmatch(self.revision):
             raise SystemExit(f"--model-revision must be a 40-character lowercase hex commit sha, not {self.revision!r}: "
                              "a branch or tag name moves and pins nothing")
+        if self._unpinned(cfg) and not self.allow_unpinned:
+            raise SystemExit("--model-revision is required for a Hugging Face repository: loading it runs the "
+                             "repository's own Python (trust_remote_code) on this machine, and only a commit sha "
+                             "says which code. Pass the 40-character sha, or --allow-unpinned to accept the "
+                             "default branch")
         if cfg.extra:
             raise SystemExit(f"hf takes no extra engine flags; got {' '.join(cfg.extra)}")
         self.family = family_of(self._model_id(cfg))
+        self._local = self._local_dir(cfg)
         generate = None
         if self.family == "llada":
             if self.llada_repo is None:
@@ -250,9 +283,9 @@ class HF:
             self.llada_commit()                      # refuse a checkout whose commit cannot be read, before loading
         if self.quant == "4bit" and package_version("bitsandbytes") is None:
             raise SystemExit("--quant 4bit needs bitsandbytes in this environment (pip install bitsandbytes)")
-        if self.revision is None:
-            print("hf: no --model-revision; the weights and remote code are not pinned and `version` records null",
-                  file=sys.stderr)
+        if self._unpinned(cfg):
+            print("hf: --allow-unpinned: the weights and the remote code are not pinned and `version` records a "
+                  "null model revision", file=sys.stderr)
         spec = Spec(self.family, self._model_id(cfg), self.revision, self.quant, cfg.device)
         try:
             model, tokenizer = load_model(spec)
@@ -267,31 +300,53 @@ class HF:
                         else DreamBackend(model, tokenizer, cfg.device))
 
     def llada_commit(self) -> str:
-        p = subprocess.run(["git", "-C", str(self.llada_repo), "rev-parse", "HEAD"], capture_output=True, text=True,
-                           errors="replace", timeout=SHORT_TIMEOUT_S, env=_git_env())
+        """The checkout's HEAD, with `-dirty` when a tracked file differs from it (a local edit of generate.py
+        would otherwise be recorded under the upstream commit)."""
+        def git(*args: str) -> subprocess.CompletedProcess:
+            return subprocess.run(["git", "-C", str(self.llada_repo), *args], capture_output=True, text=True,
+                                  errors="replace", timeout=SHORT_TIMEOUT_S, env=_git_env())
+
+        p = git("rev-parse", "HEAD")
         sha = p.stdout.strip()
         if p.returncode != 0 or not SHA_RE.fullmatch(sha):
             raise EngineError(f"cannot read the commit of the LLaDA checkout {self.llada_repo}: "
                               f"{p.stderr.strip() or 'no output'}")
-        return sha
+        st = git("status", "--porcelain", "--untracked-files=no")
+        if st.returncode != 0:
+            raise EngineError(f"cannot read the status of the LLaDA checkout {self.llada_repo}: {st.stderr.strip()}")
+        return sha + "-dirty" if st.stdout.strip() else sha
 
     def version(self) -> str:
         """JSON: the model repository's sha (null when not given), the LLaDA checkout's commit (null for Dream) and
         the three library versions (null when not installed), read from package metadata."""
-        return json.dumps({"model_revision": self.revision,
+        local = self._local
+        return json.dumps({"model_revision": self.revision, "model_source": "local" if local else "hub",
+                           "model_dir": str(local) if local else None,
+                           "model_revision_verified": self.revision is not None and not local,
                            "llada_commit": self.llada_commit() if self.family == "llada" else None,
                            "transformers": package_version("transformers"), "torch": package_version("torch"),
                            "bitsandbytes": package_version("bitsandbytes")}, sort_keys=True)
 
-    def ram_gb_after_load(self, cfg: GenConfig) -> float:
-        """Free RAM the preflight asks for. The weights are resident before the preflight runs, so MemAvailable
-        already excludes them; this covers the Python loop's working memory (logits and softmax for one canvas
-        are a few hundred MB). An estimate, not a measurement."""
-        return 1.0
+    def ram_gb_after_load(self, cfg: GenConfig) -> float | None:
+        """Free RAM the preflight asks for, an estimate and not a measurement: bf16 is 1.25 times the weights plus
+        3 GB of working memory, 4-bit is the weights over 3.5 plus 3 GB. The weights' size comes from the table for
+        the two known repositories, else from the *.safetensors of a local directory, else None: an unknown size
+        fails the preflight's memory check instead of passing it."""
+        local = self._local_dir(cfg)
+        if local is not None:
+            total = sum(f.stat().st_size for f in local.glob("*.safetensors") if f.is_file()) / 1e9
+            gb = total or None
+        else:
+            gib = WEIGHTS_GIB.get(self._model_id(cfg))
+            gb = gib * GIB if gib else None
+        if gb is None:
+            return None
+        return (gb * BF16_RESIDENT if self.quant == "none" else gb / NF4_RATIO) + WORKING_GB
 
     def flags(self, cfg: GenConfig) -> dict:
         base = {"engine": self.name, "family": self.family, "hf_model": self._model_id(cfg), "quant": self.quant,
                 "weights": "bf16" if self.quant == "none" else "bnb-nf4", "device": cfg.device,
+                "unpinned": self._unpinned(cfg),
                 "gen_length": cfg.gen_length, "steps": cfg.steps, "temperature": 0.0,
                 "forward_passes_measured": False}
         if self.family == "llada":
