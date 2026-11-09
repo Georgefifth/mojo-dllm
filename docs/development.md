@@ -148,6 +148,10 @@ exit status 137, the cap was most likely reached; `journalctl -k | grep oom-kill
 `constraint=CONSTRAINT_MEMCG` is the cap working, while `constraint=CONSTRAINT_NONE` with `global_oom` means the
 whole machine ran out of memory.
 
+The test suite checks the limits the kernel reports for a capped scope (`memory.max`, `memory.swap.max`,
+`memory.oom.group`). The test that kills a process at its cap runs only with `CAPPED_TEST_KILL=1`, because GNOME's
+`gsd-housekeeping` answers every such kill with an "Application Stopped" notification.
+
 For a container, set the same two limits on the container: `podman run --memory 12g --memory-swap 12g`
 (`--memory-swap` counts memory plus swap, so equal values mean no swap).
 
