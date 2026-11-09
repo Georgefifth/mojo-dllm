@@ -353,7 +353,7 @@ def test_the_record_holds_no_server_private_field(rig: Rig) -> None:
 
 def test_flags_say_that_sampling_is_the_servers(rig: Rig) -> None:
     e, cfg = rig.ready()
-    assert e.flags(cfg)["sampling"] == "set by the server's renoise schedule; temperature, top_p and top_k are not sent"
+    assert e.flags(cfg)["sampling"] == "set by the server's diffusion algorithm; temperature, top_p and top_k are not sent"
 
 
 def test_flags_say_whether_a_custom_algorithm_config_is_set(rig: Rig) -> None:
@@ -647,9 +647,10 @@ def test_model_ids_the_server_reports_cannot_inject_escapes(rig: Rig) -> None:
 
 
 def test_a_model_path_with_escapes_is_cleaned_in_the_label_refusal(rig: Rig) -> None:
-    rig.server.state.model_info = {"model_path": "evil\x1b[2Jpath", "served_model_name": CHECKPOINT}
+    rig.server.state.models = [{"id": "dgemma", "root": "dgemma", "object": "model"}]
+    rig.server.state.model_info = {"model_path": "evil\x1b[2Jpath", "served_model_name": "dgemma"}
     with pytest.raises(SystemExit) as e:
-        rig.run()
+        rig.run(served="dgemma")
     assert "\x1b" not in str(e.value) and "evil[2Jpath" in str(e.value)
 
 
