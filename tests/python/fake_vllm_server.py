@@ -52,8 +52,9 @@ class Handler(BaseHTTPRequestHandler):
         return self.server.state       # type: ignore[attr-defined]
 
     def _log(self, body: bytes = b"") -> None:
+        # the raw request target: http.server rewrites a leading "//" in `self.path`, which would hide a doubled slash
         with self.st.lock:
-            self.st.requests.append({"method": self.command, "path": self.path, "headers": dict(self.headers),
+            self.st.requests.append({"method": self.command, "path": self.raw_requestline.decode("latin-1").split()[1], "headers": dict(self.headers),
                                      "body": body})
 
     def _send(self, status: int, payload: object, *, length: bool = True, ctype: str = "application/json") -> None:
