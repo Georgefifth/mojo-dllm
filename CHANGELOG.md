@@ -183,6 +183,14 @@ semantic versioning (0.y: minor bumps may break things).
   adding it to the read position, so a string length between 2^63 minus the
   position and 2^63 no longer wraps past the bounds check and aborts the
   process; a `Reader` that starts outside the file refuses to exist (#194).
+- The GGUF reader checks every tensor of the directory before any loader sees
+  it: each used dimension is at least 1, the element and byte counts are
+  computed by dividing first so they cannot wrap, a row of a quantized type
+  ends on a block boundary, the offset is not negative and a multiple of the
+  alignment, and the bytes lie inside the file. A repeated tensor name or
+  metadata key is refused (the first used to win without a message). `TensorInfo`
+  has a `supported` field in place of the byte count of -1 that marked a type
+  the reader cannot size, and `ggml_row_bytes` refuses a partial block (#195).
 - Model configuration rejects incompatible RoPE widths/scaling and attention
   key lengths, and unsupported-architecture errors list LLaDA and Dream.
 - Matrix load errors name the tensor and distinguish an unsupported type from

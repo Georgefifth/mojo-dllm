@@ -12,6 +12,7 @@ depends on alignment. Tensor bytes are not read here: `GGUFFile.__init__`
 checks each tensor's extent against the file.
 """
 
+from std.collections import Dict
 from std.memory import bitcast
 
 from mojo_dllm.sys.mmap import Mapping
@@ -97,38 +98,65 @@ def ggml_type_name(t: Int) -> String:
     return "type#" + String(t)
 
 
-def ggml_row_bytes(t: Int, n: Int) raises -> Int:
-    """Bytes that `n` elements of type `t` occupy. Unsupported types raise."""
+def ggml_block_bytes(t: Int) -> Int:
+    """Bytes in one block of type `t`, or 0 for a type this reader cannot size.
+
+    F32, F16 and BF16 have blocks of one element.
+    """
     if t == GGML_F32:
-        return n * 4
+        return 4
     if t == GGML_F16 or t == GGML_BF16:
-        return n * 2
+        return 2
     if t == GGML_Q5_0:
-        return n // 32 * 22
+        return 22
     if t == GGML_Q8_0:
-        return n // 32 * 34
+        return 34
     if t == GGML_Q4_K:
-        return n // 256 * 144
+        return 144
     if t == GGML_Q5_K:
-        return n // 256 * 176
+        return 176
     if t == GGML_Q6_K:
-        return n // 256 * 210
-    raise Error("unsupported GGUF tensor type: " + ggml_type_name(t))
-
-
-def _tensor_bytes(t: Int, ne0: Int, rows: Int) -> Int:
-    try:
-        return ggml_row_bytes(t, ne0) * rows
-    except:
-        return -1
+        return 210
+    return 0
 
 
 def ggml_block_size(t: Int) -> Int:
+    """Elements in one block of type `t`."""
     if t == GGML_Q5_0 or t == GGML_Q8_0:
         return 32
     if t == GGML_Q4_K or t == GGML_Q5_K or t == GGML_Q6_K:
         return 256
     return 1
+
+
+def ggml_row_bytes(t: Int, n: Int) raises -> Int:
+    """Bytes that `n` elements of type `t` occupy. Unsupported types raise, and
+    so does an `n` that ends in a partial block or whose size does not fit an Int.
+    """
+    var block_bytes = ggml_block_bytes(t)
+    if block_bytes == 0:
+        raise Error("unsupported GGUF tensor type: " + ggml_type_name(t))
+    var block = ggml_block_size(t)
+    if n < 0 or n % block != 0:
+        raise Error(
+            "row length "
+            + String(n)
+            + " is not a multiple of the "
+            + ggml_type_name(t)
+            + " block size "
+            + String(block)
+        )
+    var blocks = n // block
+    # Divide first: multiplying an untrusted length can wrap.
+    if blocks > Int.MAX // block_bytes:
+        raise Error(
+            "a row of "
+            + String(n)
+            + " "
+            + ggml_type_name(t)
+            + " elements is too large to size"
+        )
+    return blocks * block_bytes
 
 
 @fieldwise_init
@@ -155,6 +183,10 @@ struct TensorInfo(Copyable, ImplicitlyCopyable, Movable):
     var data_offset: Int
     """Absolute offset of the first byte in the mapping."""
     var n_bytes: Int
+    """Bytes the tensor occupies; 0 when the type is not `supported`."""
+    var supported: Bool
+    """Whether the type has a size here (`ggml_block_bytes`). `inspect` lists a
+    tensor of any other type, and every loader refuses it."""
 
     def n_elements(self) -> Int:
         return self.ne0 * self.ne1 * self.ne2 * self.ne3
@@ -318,8 +350,20 @@ struct GGUFFile(Movable):
         if n_tensors < 0 or n_kv < 0 or n_tensors > 1 << 20 or n_kv > 1 << 20:
             raise Error("GGUF header counts are implausible")
 
-        for _ in range(n_kv):
+        var seen_keys = Dict[String, Int]()
+        for i in range(n_kv):
             var key = r.string()
+            if key in seen_keys:
+                raise Error(
+                    "metadata key "
+                    + key
+                    + " is listed twice (entries "
+                    + String(seen_keys[key])
+                    + " and "
+                    + String(i)
+                    + ")"
+                )
+            seen_keys[key] = i
             var kind = Int(r.u32())
             if key == "general.alignment" and kind != GGUF_TYPE_UINT32:
                 raise Error(
@@ -372,33 +416,129 @@ struct GGUFFile(Movable):
                         )
 
         var rel = List[Int]()
-        for _ in range(n_tensors):
+        var raw_rel = List[UInt64]()
+        var seen_names = Dict[String, Int]()
+        for i in range(n_tensors):
             var name = r.string()
+            if name in seen_names:
+                raise Error(
+                    "tensor "
+                    + name
+                    + " is listed twice (entries "
+                    + String(seen_names[name])
+                    + " and "
+                    + String(i)
+                    + ")"
+                )
+            seen_names[name] = i
             var n_dims = Int(r.u32())
             if n_dims < 1 or n_dims > 4:
                 raise Error(
                     "tensor " + name + " has " + String(n_dims) + " dims"
                 )
             var ne = List[Int](length=4, fill=1)
+            var elements = 1
             for d in range(n_dims):
-                ne[d] = Int(r.u64())
+                var raw_dim = r.u64()
+                var dim = Int(raw_dim)
+                if dim < 1:
+                    raise Error(
+                        "tensor "
+                        + name
+                        + " has dimension "
+                        + String(d)
+                        + " of "
+                        + String(raw_dim)
+                        + "; every dimension must be at least 1"
+                    )
+                # Divide first: multiplying untrusted dimensions can wrap.
+                if dim > Int.MAX // elements:
+                    raise Error("tensor " + name + " has too many elements")
+                elements *= dim
+                ne[d] = dim
             var t = Int(r.u32())
-            var off = Int(r.u64())
-            rel.append(off)
-            # -1 marks an unsupported type: `inspect` lists it, loaders refuse it.
-            var nb = _tensor_bytes(t, ne[0], ne[1] * ne[2] * ne[3])
+            var raw_off = r.u64()
+            rel.append(Int(raw_off))
+            raw_rel.append(raw_off)
+            # A type with no size here (`supported` False) is listed by
+            # `inspect` and refused by every loader; it has no byte count.
+            var block_bytes = ggml_block_bytes(t)
+            var supported = block_bytes > 0
+            var n_bytes = 0
+            if supported:
+                var block = ggml_block_size(t)
+                if ne[0] % block != 0:
+                    raise Error(
+                        "tensor "
+                        + name
+                        + " is "
+                        + ggml_type_name(t)
+                        + " with "
+                        + String(ne[0])
+                        + " elements per row, which is not a multiple of its"
+                        " block size "
+                        + String(block)
+                    )
+                # Every size below is checked against the whole file by
+                # dividing first, so none of the products can wrap. The
+                # position of the tensor inside the file comes after the
+                # directory has been read.
+                var extends = (
+                    "tensor " + name + " extends past the end of the file"
+                )
+                var blocks = ne[0] // block
+                if blocks > self.map.size // block_bytes:
+                    raise Error(extends)
+                var row_bytes = blocks * block_bytes
+                var rows = ne[1] * ne[2] * ne[3]
+                if rows > self.map.size // row_bytes:
+                    raise Error(extends)
+                n_bytes = row_bytes * rows
             self.tensors.append(
-                TensorInfo(name, n_dims, ne[0], ne[1], ne[2], ne[3], t, 0, nb)
+                TensorInfo(
+                    name,
+                    n_dims,
+                    ne[0],
+                    ne[1],
+                    ne[2],
+                    ne[3],
+                    t,
+                    0,
+                    n_bytes,
+                    supported,
+                )
             )
         var a = self.alignment
         self.data_start = (r.at + a - 1) // a * a
+        # Negative when the directory ends the file and padding runs past it.
+        var room = self.map.size - self.data_start
         for i in range(len(self.tensors)):
-            self.tensors[i].data_offset = self.data_start + rel[i]
-            var t = self.tensors[i]
-            if t.n_bytes > 0 and t.data_offset + t.n_bytes > self.map.size:
+            var name = self.tensors[i].name
+            var off = rel[i]
+            if off < 0:
                 raise Error(
-                    "tensor " + t.name + " extends past the end of the file"
+                    "tensor "
+                    + name
+                    + " has offset "
+                    + String(raw_rel[i])
+                    + ", which is before the data section"
                 )
+            if off % a != 0:
+                raise Error(
+                    "tensor "
+                    + name
+                    + " has offset "
+                    + String(off)
+                    + ", which is not a multiple of the alignment "
+                    + String(a)
+                )
+            # `off` and `n_bytes` are both in [0, 2^63) and `room` is below the
+            # file size, so this subtraction cannot wrap.
+            if self.tensors[i].n_bytes > room - off:
+                raise Error(
+                    "tensor " + name + " extends past the end of the file"
+                )
+            self.tensors[i].data_offset = self.data_start + off
 
     # ---- metadata -------------------------------------------------------
 

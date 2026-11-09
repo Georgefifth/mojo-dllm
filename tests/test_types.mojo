@@ -1,5 +1,5 @@
 from std.testing import assert_equal, assert_true, assert_raises, TestSuite
-from mojo_dllm.formats.gguf import GGUFFile, TensorInfo
+from mojo_dllm.formats.gguf import GGUFFile, TensorInfo, ggml_block_bytes
 from mojo_dllm.quant.kquants import (
     has_decoder,
     has_matrix_kernel,
@@ -20,7 +20,9 @@ def test_decoder_and_matrix_support() raises:
 
 
 def tensor_type(t: Int) -> TensorInfo:
-    return TensorInfo("blk.0.attn_q.weight", 2, 256, 8, 1, 1, t, 0, 0)
+    return TensorInfo(
+        "blk.0.attn_q.weight", 2, 256, 8, 1, 1, t, 0, 0, ggml_block_bytes(t) > 0
+    )
 
 
 def test_matrix_type_errors_name_tensor() raises:
@@ -87,7 +89,7 @@ def test_gpu_constructor_checks_embedding_before_device_creation() raises:
 def test_embedding_types_accept_all_decoders_and_name_unknown_tensor() raises:
     for t in List[Int]([0, 1, 30, 6, 8, 12, 13, 14]):
         check_embedding_type(
-            TensorInfo("token_embd.weight", 2, 256, 1, 1, 1, t, 0, 0)
+            TensorInfo("token_embd.weight", 2, 256, 1, 1, 1, t, 0, 0, True)
         )
     with assert_raises(
         contains=(
@@ -95,7 +97,7 @@ def test_embedding_types_accept_all_decoders_and_name_unknown_tensor() raises:
         )
     ):
         check_embedding_type(
-            TensorInfo("token_embd.weight", 2, 256, 1, 1, 1, 16, 0, 0)
+            TensorInfo("token_embd.weight", 2, 256, 1, 1, 1, 16, 0, 0, False)
         )
 
 

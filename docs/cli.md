@@ -152,6 +152,11 @@ ERROR: unsupported GGUF tensor type: IQ2_XXS (tensor blk.0.attn_q.weight)
 ERROR: tensor blk.0.attn_q.weight is Q8_0: matrix kernels exist for Q4_K and Q6_K
 ERROR: unsupported model architecture: qwen2 (runs: llada, dream; read only: diffusion-gemma)
 ERROR: required metadata key missing: tokenizer.ggml.model
+ERROR: tensor blk.0.attn_q.weight extends past the end of the file
+ERROR: tensor blk.0.attn_q.weight has offset 16, which is not a multiple of the alignment 32
+ERROR: tensor blk.0.attn_q.weight is Q8_0 with 33 elements per row, which is not a multiple of its block size 32
+ERROR: tensor blk.0.attn_q.weight is listed twice (entries 3 and 9)
+ERROR: metadata key general.name is listed twice (entries 1 and 5)
 ERROR: tensor shape mismatch for blk.0.attn_q.weight: [4096, 2048], expected [4096, 4096]
 ERROR: no GPU found: the GPU backend needs an NVIDIA GPU with compute capability 8.0 or newer (run with --device cpu)
 ```

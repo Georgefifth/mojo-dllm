@@ -1,6 +1,14 @@
-from std.testing import assert_equal, assert_raises, TestSuite
+from std.testing import assert_equal, assert_raises, assert_true, TestSuite
 
-from mojo_dllm.formats.gguf import GGUFFile, GGML_Q4_K, Reader, ggml_row_bytes
+from mojo_dllm.formats.gguf import (
+    GGUFFile,
+    GGML_F32,
+    GGML_Q8_0,
+    GGML_Q4_K,
+    Reader,
+    ggml_block_bytes,
+    ggml_row_bytes,
+)
 from mojo_dllm.quant.kquants import dequant_row
 from mojo_dllm.kernels.packed import PackedMatrix
 from mojo_dllm.sys.mem import Bytes, Floats
@@ -207,6 +215,122 @@ def test_rejects_five_dims() raises:
 def test_rejects_tensor_data_cut() raises:
     with assert_raises(contains="tensor q4k extends past the end of the file"):
         _ = GGUFFile(FIX + "tensor-cut.gguf")
+
+
+def test_directory_control_file_is_valid() raises:
+    # Every tensor-directory refusal below differs from this file in one field.
+    var g = GGUFFile(FIX + "tensors-control.gguf")
+    assert_equal(g.n_tensors(), 1)
+    assert_equal(g.tensor("f32").n_elements(), 8)
+    assert_equal(g.tensor("f32").n_bytes, 32)
+    assert_equal(g.tensor("f32").data_offset % 32, 0)
+    _ = GGUFFile(FIX + "kv-keys-distinct.gguf")
+
+
+def test_rejects_negative_tensor_offset() raises:
+    # -32 is a multiple of the alignment and points inside the file, before the
+    # data section: only a sign check refuses it.
+    with assert_raises(contains="tensor f32 has offset 18446744073709551584"):
+        _ = GGUFFile(FIX + "tensor-offset-negative.gguf")
+
+
+def test_rejects_tensor_offset_near_int64_max() raises:
+    with assert_raises(contains="tensor f32 extends past the end of the file"):
+        _ = GGUFFile(FIX + "tensor-offset-int64max.gguf")
+
+
+def test_rejects_unaligned_tensor_offset() raises:
+    with assert_raises(
+        contains=(
+            "tensor f32 has offset 16, which is not a multiple of the"
+            " alignment 32"
+        )
+    ):
+        _ = GGUFFile(FIX + "tensor-offset-unaligned.gguf")
+
+
+def test_rejects_zero_dimension() raises:
+    with assert_raises(contains="tensor f32 has dimension 1 of 0"):
+        _ = GGUFFile(FIX + "tensor-dim-zero.gguf")
+
+
+def test_rejects_negative_dimension() raises:
+    with assert_raises(
+        contains="tensor f32 has dimension 1 of 9223372036854775808"
+    ):
+        _ = GGUFFile(FIX + "tensor-dim-negative.gguf")
+
+
+def test_rejects_dimensions_whose_product_wraps() raises:
+    with assert_raises(contains="tensor q4k has too many elements"):
+        _ = GGUFFile(FIX + "tensor-dim-wraps.gguf")
+
+
+def test_rejects_byte_count_that_wraps() raises:
+    with assert_raises(contains="tensor f32 extends past the end of the file"):
+        _ = GGUFFile(FIX + "tensor-bytes-wrap.gguf")
+
+
+def test_rejects_row_count_whose_bytes_wrap() raises:
+    with assert_raises(contains="tensor f32 extends past the end of the file"):
+        _ = GGUFFile(FIX + "tensor-rows-wrap.gguf")
+
+
+def test_rejects_row_that_ends_in_a_partial_block() raises:
+    with assert_raises(
+        contains=(
+            "tensor q8 is Q8_0 with 16 elements per row, which is not a"
+            " multiple of its block size 32"
+        )
+    ):
+        _ = GGUFFile(FIX + "tensor-row-partial-block.gguf")
+
+
+def test_rejects_unsupported_tensor_past_the_end() raises:
+    with assert_raises(contains="tensor iq2 extends past the end of the file"):
+        _ = GGUFFile(FIX + "tensor-unsupported-past-end.gguf")
+
+
+def test_rejects_duplicate_tensor_name() raises:
+    with assert_raises(contains="tensor f32 is listed twice"):
+        _ = GGUFFile(FIX + "tensor-name-duplicate.gguf")
+
+
+def test_rejects_duplicate_metadata_key() raises:
+    with assert_raises(contains="metadata key test.value is listed twice"):
+        _ = GGUFFile(FIX + "kv-key-duplicate.gguf")
+
+
+def test_lists_an_unsupported_type_without_a_byte_count() raises:
+    var g = GGUFFile(FIX + "tensor-unsupported-type.gguf")
+    var t = g.tensor("iq2")
+    assert_equal(t.type_name(), "IQ2_XXS")
+    assert_true(not t.supported)
+    assert_equal(t.n_bytes, 0)
+    assert_true(GGUFFile(FIX + "tensors-control.gguf").tensor("f32").supported)
+
+
+def test_row_bytes_refuses_a_partial_block() raises:
+    assert_equal(ggml_row_bytes(GGML_Q8_0, 64), 68)
+    with assert_raises(
+        contains="row length 33 is not a multiple of the Q8_0 block size 32"
+    ):
+        _ = ggml_row_bytes(GGML_Q8_0, 33)
+    with assert_raises(contains="row length -4 is not a multiple"):
+        _ = ggml_row_bytes(GGML_F32, -4)
+
+
+def test_row_bytes_refuses_a_size_that_wraps() raises:
+    assert_equal(ggml_row_bytes(GGML_F32, Int.MAX // 4), Int.MAX // 4 * 4)
+    with assert_raises(contains="is too large to size"):
+        _ = ggml_row_bytes(GGML_F32, Int.MAX // 4 + 1)
+    with assert_raises(contains="is too large to size"):
+        _ = ggml_row_bytes(GGML_Q8_0, (Int.MAX // 34 + 1) * 32)
+
+
+def test_block_bytes_is_zero_for_a_type_it_cannot_size() raises:
+    assert_equal(ggml_block_bytes(16), 0)
+    assert_equal(ggml_block_bytes(GGML_Q4_K), 144)
 
 
 def test_rejects_unsupported_row_type() raises:

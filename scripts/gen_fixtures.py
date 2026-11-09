@@ -422,6 +422,74 @@ def malformed() -> None:
     (out / "tensor-cut.gguf").write_bytes(base[:cut])
     # Valid empty directory: the last uint64 read ends exactly at EOF, no padding.
     (out / "exact-eof.gguf").write_bytes(b"GGUF" + (3).to_bytes(4, "little") + bytes(16))
+    tensor_directory_cases(out)
+
+
+GGML_F32, GGML_Q8_0, GGML_Q4_K, GGML_IQ2_XXS = 0, 8, 12, 16
+GGUF_STRING, GGUF_UINT32 = 8, 4
+
+
+def raw_gguf(tensors, kvs=(), data=b"", alignment=32) -> bytes:
+    """A GGUF v3 file written field by field, for directories that GGUFWriter cannot produce: dimensions and
+    offsets that are absurd or negative as an Int, and repeated names. `tensors` holds (name, dims, ggml type,
+    offset) and `kvs` holds (key, GGUF value type, payload bytes); the directory is followed by padding to
+    `alignment` and `data`."""
+
+    def string(text: str) -> bytes:
+        raw = text.encode()
+        return len(raw).to_bytes(8, "little") + raw
+
+    out = bytearray(b"GGUF" + (3).to_bytes(4, "little"))
+    out += len(tensors).to_bytes(8, "little") + len(kvs).to_bytes(8, "little")
+    for key, kind, payload in kvs:
+        out += string(key) + kind.to_bytes(4, "little") + payload
+    for name, dims, ggml_type, offset in tensors:
+        out += string(name) + len(dims).to_bytes(4, "little")
+        for dim in dims:
+            out += dim.to_bytes(8, "little")
+        out += ggml_type.to_bytes(4, "little") + offset.to_bytes(8, "little")
+    out += bytes(-len(out) % alignment)
+    return bytes(out + data)
+
+
+def tensor_directory_cases(out: pathlib.Path) -> None:
+    """One file per refusal of the tensor directory (#195), each differing from `tensors-control` in one field."""
+    arch = ("general.architecture", GGUF_STRING, (4).to_bytes(8, "little") + b"test")
+    f32_data = np.arange(8, dtype="<f4").tobytes()  # the 32 bytes of an F32 tensor of 8 elements
+    f32 = ("f32", [8], GGML_F32, 0)
+
+    def write(name: str, tensors, data=f32_data, kvs=(arch,)) -> None:
+        (out / (name + ".gguf")).write_bytes(raw_gguf(tensors, kvs, data))
+
+    # The control is read back by the reference reader, so a refusal below cannot come from a bad writer.
+    write("tensors-control", [f32])
+    control = out / "tensors-control.gguf"
+    ref = GGUFReader(str(control))
+    assert [t.name for t in ref.tensors] == ["f32"] and ref.tensors[0].data.tolist() == list(range(8))
+    assert ref.alignment == 32 and ref.data_offset % 32 == 0
+
+    # Offsets. The values are chosen so that each guard is the only thing that refuses its file: -32 is a
+    # multiple of the alignment and lands inside the file, 2^63 - 32 is a multiple of it too.
+    write("tensor-offset-negative", [("f32", [8], GGML_F32, (1 << 64) - 32)])
+    write("tensor-offset-int64max", [("f32", [8], GGML_F32, (1 << 63) - 32)])
+    write("tensor-offset-unaligned", [("f32", [8], GGML_F32, 16)])
+    # Dimensions and byte counts.
+    write("tensor-dim-zero", [("f32", [8, 0], GGML_F32, 0)])
+    write("tensor-dim-negative", [("f32", [8, 1 << 63], GGML_F32, 0)])
+    write("tensor-dim-wraps", [("q4k", [4096, 1 << 61], GGML_Q4_K, 0)])  # 2304 bytes per row x 2^61 = 0 mod 2^64
+    # The sizes wrap to 32 bytes, the data the file holds, so a check that multiplies first accepts them.
+    write("tensor-bytes-wrap", [("f32", [(1 << 62) + 8], GGML_F32, 0)])  # 4 bytes x (2^62 + 8) = 32 mod 2^64
+    write("tensor-rows-wrap", [("f32", [2, (1 << 61) + 4], GGML_F32, 0)])  # 8 bytes x (2^61 + 4) rows = 32 mod 2^64
+    write("tensor-row-partial-block", [("q8", [16, 2], GGML_Q8_0, 0)], data=bytes(68))  # 16 of 32 per block
+    # A type this reader cannot decode stays listed, with no byte count, but its offset is still checked.
+    iq2 = bytes(66)
+    write("tensor-unsupported-type", [("iq2", [256], GGML_IQ2_XXS, 0)], data=iq2)
+    write("tensor-unsupported-past-end", [("iq2", [256], GGML_IQ2_XXS, 1 << 20)], data=iq2)
+    # Repeats: the first of two equal names or keys used to win without a word.
+    write("tensor-name-duplicate", [f32, ("f32", [8], GGML_F32, 32)], data=f32_data * 2)
+    two = (1).to_bytes(4, "little")
+    write("kv-key-duplicate", [f32], kvs=(arch, ("test.value", GGUF_UINT32, two), ("test.value", GGUF_UINT32, two)))
+    write("kv-keys-distinct", [f32], kvs=(arch, ("test.value", GGUF_UINT32, two), ("test.other", GGUF_UINT32, two)))
 
 
 def dequant_types() -> None:
