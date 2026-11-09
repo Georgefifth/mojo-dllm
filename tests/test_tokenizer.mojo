@@ -168,7 +168,7 @@ def test_utf8_cases_match_the_reference_table() raises:
                 assert_true(False, name + ": decoded to " + shown)
             assert_equal(utf8_first_invalid(Span(data)), first, name)
             seen += 1
-    assert_true(seen >= 39, "utf8-cases.tsv has " + String(seen) + " cases")
+    assert_true(seen >= 40, "utf8-cases.tsv has " + String(seen) + " cases")
 
 
 def _length_at(data: List[UInt8], i: Int) -> Int:

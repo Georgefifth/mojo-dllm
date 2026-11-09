@@ -31,6 +31,7 @@ two-byte-lead-then-ascii	c328	fffd 28	0
 three-byte-then-ascii-second	e228a1	fffd 28 fffd	0
 three-byte-then-ascii-third	e28228	fffd fffd 28	0
 four-byte-then-ascii-fourth	f09f9828	fffd fffd fffd 28	0
+four-byte-then-ascii-third	f09f2880	fffd fffd 28 fffd	0
 lead-then-lead	c3c3a9	fffd e9	0
 truncated-two-byte	61c3	61 fffd	1
 truncated-three-byte	e282	fffd fffd	0

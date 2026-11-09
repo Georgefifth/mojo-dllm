@@ -1151,6 +1151,7 @@ UTF8_CASES = [
     ("three-byte-then-ascii-second", bytes([0xE2, 0x28, 0xA1])),
     ("three-byte-then-ascii-third", bytes([0xE2, 0x82, 0x28])),
     ("four-byte-then-ascii-fourth", bytes([0xF0, 0x9F, 0x98, 0x28])),
+    ("four-byte-then-ascii-third", bytes([0xF0, 0x9F, 0x28, 0x80])),
     ("lead-then-lead", bytes([0xC3, 0xC3, 0xA9])),
     ("truncated-two-byte", bytes([0x61, 0xC3])),
     ("truncated-three-byte", bytes([0xE2, 0x82])),
@@ -1220,11 +1221,11 @@ def utf8_cases() -> None:
         if python != expected:
             differs.append(name)
         lines.append("\t".join((name, data.hex() or "-", " ".join(f"{cp:x}" for cp in expected) or "-", str(first))))
-    # The four cases where Python and the lead-byte rule part are the sequences that stop short after a valid
+    # The five cases where Python and the lead-byte rule part are the sequences that stop short after a valid
     # prefix (a lead byte and one or more good continuation bytes): Python writes one U+FFFD for the stretch,
     # the lead-byte rule one for each byte. No other case parts, so a change in either decoder shows here.
     assert sorted(differs) == [
-        "four-byte-then-ascii-fourth", "three-byte-then-ascii-third", "truncated-four-byte", "truncated-three-byte",
+        "four-byte-then-ascii-fourth", "four-byte-then-ascii-third", "three-byte-then-ascii-third", "truncated-four-byte", "truncated-three-byte",
     ], differs
     (OUT / "utf8-cases.tsv").write_text("\n".join(lines) + "\n")
 
