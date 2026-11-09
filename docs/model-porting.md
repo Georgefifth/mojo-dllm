@@ -49,9 +49,13 @@ its own metadata.
 | `<arch>.rope.scaling.factor` | optional, 1.0 | other factors are rejected; no scaled RoPE is implemented |
 
 The head dimension is `embedding_length / head_count`, with exact divisibility
-required. Other scaling metadata is not interpreted. These compatibility checks
-do not add general validation of metadata ranges. Whether to constrain canvases
-by `context_length` or reject `attention.causal = true` remains a separate policy
+required. `block_count`, `embedding_length`, `head_count`, `head_count_kv`,
+`feed_forward_length` and `vocab_size` must be positive, and the epsilon and
+the RoPE base must be finite and above zero; a value outside those ranges
+stops the load with `<key> must be positive, got N` or `<key> must be finite and
+above zero, got X`. Other scaling metadata is not interpreted, and
+`context_length` has no range check. Whether to constrain canvases by
+`context_length` or reject `attention.causal = true` remains a separate policy
 decision.
 
 ### DiffusionGemma metadata

@@ -207,6 +207,12 @@ semantic versioning (0.y: minor bumps may break things).
   past the tensor. The check runs before any loader and replaces the width test
   that the CPU and the GPU loader each carried; the error names the tensor,
   both shapes and the keys that set them (#198).
+- For LLaDA and Dream, `ModelConfig` refuses a block count, hidden width, head
+  count, KV head count, feed-forward width or vocabulary size that is zero or
+  negative, and an epsilon or RoPE base that is zero, negative, NaN or
+  infinite, naming the key. A zero block count used to load a model with no
+  layers, a zero KV head count one with no KV width, and a negative head count
+  a negative head dimension (#199).
 - Model configuration rejects incompatible RoPE widths/scaling and attention
   key lengths, and unsupported-architecture errors list LLaDA and Dream.
 - Matrix load errors name the tensor and distinguish an unsupported type from

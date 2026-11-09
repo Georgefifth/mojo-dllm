@@ -311,6 +311,50 @@ def test_cpu_loader_refuses_a_short_embedding_before_any_layer() raises:
         )
 
 
+def test_config_refuses_a_zero_count_and_names_the_key() raises:
+    for key in [
+        "llada.block_count",
+        "llada.embedding_length",
+        "llada.attention.head_count",
+        "llada.attention.head_count_kv",
+        "llada.feed_forward_length",
+        "llada.vocab_size",
+    ]:
+        _refuses_config(
+            "zero-" + String(key), String(key) + " must be positive, got 0"
+        )
+
+
+def test_config_refuses_a_negative_count_and_names_the_key() raises:
+    _refuses_config(
+        "negative-llada.attention.head_count",
+        "llada.attention.head_count must be positive, got -2",
+    )
+    _refuses_config(
+        "negative-llada.attention.head_count_kv",
+        "llada.attention.head_count_kv must be positive, got -1",
+    )
+
+
+def test_config_refuses_an_epsilon_that_is_not_finite_and_above_zero() raises:
+    for label in ["zero", "negative", "nan", "inf"]:
+        _refuses_config(
+            String(label) + "-llada.attention.layer_norm_rms_epsilon",
+            (
+                "llada.attention.layer_norm_rms_epsilon must be finite and"
+                " above zero"
+            ),
+        )
+
+
+def test_config_refuses_a_rope_base_that_is_not_finite_and_above_zero() raises:
+    for label in ["zero", "negative", "nan", "inf"]:
+        _refuses_config(
+            String(label) + "-llada.rope.freq_base",
+            "llada.rope.freq_base must be finite and above zero",
+        )
+
+
 def test_config_rejects_missing_layers() raises:
     var g = GGUFFile(FIX + "metadata/missing-llada.block_count.gguf")
     with assert_raises(

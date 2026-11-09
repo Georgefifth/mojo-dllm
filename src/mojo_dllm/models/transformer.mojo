@@ -31,6 +31,7 @@ CPU forward pass for that architecture is `DiffusionGemma` in
 `models/diffusion_gemma.mojo`.
 """
 
+from std.math import isfinite
 from std.time import perf_counter_ns
 
 from mojo_dllm.formats.gguf import GGUFFile, TensorInfo
@@ -157,21 +158,26 @@ struct ModelConfig(Copyable, ImplicitlyCopyable, Movable):
         self.softcap = 0.0
         self.canvas = 0
         var a = self.arch + "."
-        self.n_layers = g.get_int(a + "block_count")
-        self.hidden = g.get_int(a + "embedding_length")
-        self.n_heads = g.get_int(a + "attention.head_count")
-        self.n_kv_heads = g.get_int_or(
-            a + "attention.head_count_kv", self.n_heads
-        )
+        self.n_layers = _positive(g, a + "block_count")
+        self.hidden = _positive(g, a + "embedding_length")
+        self.n_heads = _positive(g, a + "attention.head_count")
+        var kv_key = a + "attention.head_count_kv"
+        self.n_kv_heads = self.n_heads
+        if g.has_key(kv_key):
+            self.n_kv_heads = _positive(g, kv_key)
         self.head_dim = self.hidden // self.n_heads
-        self.ffn = g.get_int(a + "feed_forward_length")
+        self.ffn = _positive(g, a + "feed_forward_length")
         self.ctx = g.get_int_or(a + "context_length", 4096)
-        self.eps = g.get_f32(a + "attention.layer_norm_rms_epsilon")
-        self.theta = g.get_f32_or(a + "rope.freq_base", 10000.0)
+        var eps_key = a + "attention.layer_norm_rms_epsilon"
+        self.eps = g.get_f32(eps_key)
+        _check_finite_positive(eps_key, self.eps)
+        var theta_key = a + "rope.freq_base"
+        self.theta = g.get_f32_or(theta_key, 10000.0)
+        _check_finite_positive(theta_key, self.theta)
         self.mask_id = g.get_int("tokenizer.ggml.mask_token_id")
         var vocab_source = a + "vocab_size"
         if g.has_key(vocab_source):
-            self.vocab = g.get_int(vocab_source)
+            self.vocab = _positive(g, vocab_source)
         else:
             self.vocab = g.tensor("output.weight").n_rows()
             vocab_source = "the rows of output.weight"
@@ -268,6 +274,15 @@ def _positive(g: GGUFFile, key: String) raises -> Int:
     if value <= 0:
         raise Error(key + " must be positive, got " + String(value))
     return value
+
+
+def _check_finite_positive(key: String, value: Float32) raises:
+    """A float hyperparameter that a division or a power takes: not NaN, not
+    infinite, above zero."""
+    if not (value > 0.0) or not isfinite(value):
+        raise Error(
+            key + " must be finite and above zero, got " + String(value)
+        )
 
 
 def _equal_to(g: GGUFFile, key: String, want: Int, other: String) raises:

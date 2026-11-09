@@ -537,6 +537,8 @@ def metadata_cases() -> None:
                 w.add_string(key, value)
             elif isinstance(value, float):
                 w.add_float32(key, value)
+            elif value < 0:
+                w.add_int32(key, value)
             else:
                 w.add_uint32(key, value)
         w.write_header_to_file()
@@ -555,6 +557,16 @@ def metadata_cases() -> None:
     write("rope-width-type", {"llada.rope.dimension_count": "128"})
     write("rope-factor-type", {"llada.rope.scaling.factor": "1.0"})
     write("defaults")
+    # Hyperparameters that are zero, negative or not finite (#199), one file per key, named as the
+    # DiffusionGemma ones are.
+    for key in ("llada.block_count", "llada.embedding_length", "llada.attention.head_count",
+                "llada.attention.head_count_kv", "llada.feed_forward_length", "llada.vocab_size"):
+        write("zero-" + key, {key: 0})
+    write("negative-llada.attention.head_count", {"llada.attention.head_count": -2})
+    write("negative-llada.attention.head_count_kv", {"llada.attention.head_count_kv": -1})
+    for key in ("llada.attention.layer_norm_rms_epsilon", "llada.rope.freq_base"):
+        for label, value in (("zero", 0.0), ("negative", -1e-5), ("nan", float("nan")), ("inf", float("inf"))):
+            write(f"{label}-{key}", {key: value})
     for kind in ("none", "linear"):
         write("compatible-" + kind, {"llada.rope.dimension_count": 128,
                                     "llada.attention.key_length": 128,
