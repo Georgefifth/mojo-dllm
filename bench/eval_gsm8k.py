@@ -14,7 +14,11 @@ token per denoising step (steps = generation length), greedy, LLaDA blocks of
 32. While bench/eval/runs/PAUSE exists, `run` waits between problems. On
 battery it waits for the charger, and a problem the charger left midway is
 answered again, so `generate_s` is a mains-power time (--allow-battery skips
-both and records `on_battery`).
+both and records `on_battery`). Every problem also runs inside an isolation window (`bench/isolation.py`): the
+arm starts with a preflight of the machine and writes bench/eval/runs/ARM.env.json, a problem whose window
+saw other CPU, GPU, swap or thermal activity is run again up to `--isolation-retries` times, and each row
+records `isolation`. `--tune` sets the power profile to performance for the run; `--allow-noisy` continues
+after a failed preflight.
 Scoring takes the number after "The answer is", else the last number in
 the output, and compares it with the gold answer.
 
@@ -45,6 +49,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 DATA = ROOT / "bench" / "eval" / "gsm8k-200.jsonl"
 RUNS = ROOT / "bench" / "eval" / "runs"
 sys.path.insert(0, str(ROOT / "bench"))
+import isolation  # noqa: E402  (bench/isolation.py)
 import power  # noqa: E402  (bench/power.py)
 
 # While this file exists, `run` waits before starting the next problem, so a
@@ -134,28 +139,32 @@ def cmd_run(args: argparse.Namespace, extra: list[str]) -> int:
     version += "-dirty" if dirty else ""
     model = pathlib.Path(args.model).name
     done = answered(out, args.arm, flags, version, model)
-    for k, p in enumerate(problems):
-        if p["index"] in done:
-            continue
-        wait_if_paused()
-        cmd = [str(ROOT / "build/mojo-dllm"), "run", "--model", args.model,
-               "--prompt", PROMPT.format(question=p["question"])] + flags
-        r, pinfo = power.run_on_mains(lambda: subprocess.run(cmd, capture_output=True, text=True),
-                                      allow_battery=args.allow_battery, log=lambda m: print(m, flush=True))
-        line = next((l for l in r.stdout.splitlines() if l.startswith("{")), None)
-        if r.returncode != 0 or line is None:
-            raise SystemExit(f"problem {p['index']}: mojo-dllm failed (rc={r.returncode}): {r.stderr[-400:]}")
-        j = json.loads(line)
-        pred = extract(j["text"])
-        rec = dict(index=p["index"], gold=p["answer"], pred=pred, correct=pred == canon(p["answer"]),
-                   forward_passes=j["forward_passes"], generate_s=j["generate_s"],
-                   stopped_early=j.get("stopped_early"), text=j["text"], flags=flags, version=version,
-                   model=model, power_retries=pinfo["power_retries"], on_battery=pinfo["on_battery"],
-                   power_source=pinfo["power_source"])
-        with out.open("a") as f:
-            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
-        print(f"[{k + 1}/{len(problems)}] #{p['index']} {'ok ' if rec['correct'] else 'BAD'} "
-              f"pred={pred} gold={p['answer']} passes={j['forward_passes']} {j['generate_s']:.1f}s", flush=True)
+    todo = [(k, p) for k, p in enumerate(problems) if p["index"] not in done]
+    if not todo:
+        return 0
+    with isolation.arm_session(args, arm=args.arm, device=args.device, model=args.model, runs_dir=RUNS,
+                               versions={"mojo-dllm": version}) as arm:
+        for k, p in todo:
+            wait_if_paused()
+            cmd = [str(ROOT / "build/mojo-dllm"), "run", "--model", args.model,
+                   "--prompt", PROMPT.format(question=p["question"])] + flags
+            r, pinfo = arm.run(lambda: subprocess.run(cmd, capture_output=True, text=True))
+            line = next((l for l in r.stdout.splitlines() if l.startswith("{")), None)
+            if r.returncode != 0 or line is None:
+                raise SystemExit(f"problem {p['index']}: mojo-dllm failed (rc={r.returncode}): {r.stderr[-400:]}")
+            j = json.loads(line)
+            pred = extract(j["text"])
+            rec = dict(index=p["index"], gold=p["answer"], pred=pred, correct=pred == canon(p["answer"]),
+                       forward_passes=j["forward_passes"], generate_s=j["generate_s"],
+                       stopped_early=j.get("stopped_early"), text=j["text"], flags=flags, version=version,
+                       model=model, power_retries=pinfo["power_retries"], on_battery=pinfo["on_battery"],
+                       power_source=pinfo["power_source"], isolation=pinfo["isolation"])
+            with out.open("a") as f:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            noisy = "" if pinfo["isolation"]["clean"] else " NOISY: " + "; ".join(pinfo["isolation"]["reasons"])
+            print(f"[{k + 1}/{len(problems)}] #{p['index']} {'ok ' if rec['correct'] else 'BAD'} "
+                  f"pred={pred} gold={p['answer']} passes={j['forward_passes']} {j['generate_s']:.1f}s{noisy}",
+                  flush=True)
     return 0
 
 
@@ -194,6 +203,33 @@ def passes_mean(rows: dict[int, dict], common: list[int]) -> float | None:
     return sum(got) / len(got) if got else None
 
 
+def is_clean(row: dict) -> bool:
+    """True only for a row whose isolation window said clean; a row with no window is not known to be clean."""
+    return (row.get("isolation") or {}).get("clean") is True
+
+
+def clean_summary(A: dict[int, dict], B: dict[int, dict], common: list[int],
+                  names: tuple[str, str] = ("a", "b")) -> dict:
+    """Timing over the problems whose window was clean in both arms, and how many rows each arm had that were not.
+
+    `generate_s_mean_clean` is None for an arm when no problem is clean in both (never 0). Rows written before
+    windows existed count as `unchecked_rows`. Accuracy is not touched: it stays over every common row."""
+    both = [i for i in common if is_clean(A[i]) and is_clean(B[i])]
+    na, nb = names
+
+    def mean(rows: dict[int, dict]) -> float | None:
+        return sum(rows[i]["generate_s"] for i in both) / len(both) if both else None
+
+    def noisy(rows: dict[int, dict]) -> int:
+        return sum(1 for i in common if "isolation" in rows[i] and not is_clean(rows[i]))
+
+    def unchecked(rows: dict[int, dict]) -> int:
+        return sum(1 for i in common if "isolation" not in rows[i])
+
+    return {"generate_s_mean_clean": {na: mean(A), nb: mean(B)}, "clean_rows": len(both),
+            "noisy_rows": {na: noisy(A), nb: noisy(B)}, "unchecked_rows": {na: unchecked(A), nb: unchecked(B)}}
+
+
 def cmd_compare(a_name: str, b_name: str, limit: int = 0) -> int:
     A, B = first_rows(load_arm(a_name), limit), first_rows(load_arm(b_name), limit)
     ca, cb = arm_config(a_name, A), arm_config(b_name, B)
@@ -216,13 +252,15 @@ def cmd_compare(a_name: str, b_name: str, limit: int = 0) -> int:
         forward_passes_rows={a_name: len(passes_of(A, common)), b_name: len(passes_of(B, common))},
         generate_s_mean={a_name: sum(A[i]["generate_s"] for i in common) / n,
                          b_name: sum(B[i]["generate_s"] for i in common) / n},
+        **clean_summary(A, B, common, (a_name, b_name)),
     )
     suffix = f"-first{limit}" if limit else ""
     out = ROOT / "bench" / "eval" / f"{dt.date.today().isoformat()}-{a_name}-vs-{b_name}{suffix}.json"
     out.write_text(json.dumps(doc, indent=2) + "\n")
     print(json.dumps({k: doc[k] for k in ("problems", "accuracy", "difference", "ci95", "discordant",
                                            "mcnemar_p", "forward_passes_mean", "forward_passes_rows",
-                                           "generate_s_mean")}, indent=1))
+                                           "generate_s_mean", "generate_s_mean_clean", "clean_rows",
+                                           "noisy_rows", "unchecked_rows")}, indent=1))
     print(f"wrote {out.relative_to(ROOT)}")
     return 0
 
@@ -275,6 +313,7 @@ def main() -> int:
     r.add_argument("--steps", type=int, default=0)
     r.add_argument("--limit", type=int, default=0)
     r.add_argument("--allow-battery", action="store_true", help="answer on battery instead of pausing")
+    isolation.add_arguments(r)
     c = sub.add_parser("compare")
     c.add_argument("a")
     c.add_argument("b")

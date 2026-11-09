@@ -159,6 +159,122 @@ it names. Two gaps are open: `--check` passes when a table marker is missing, a
 target file is missing, or the quality or eval evidence is deleted ([#141](https://github.com/vladimirrott/mojo-dllm/issues/141)), and an
 unknown mode exits 0 ([#142](https://github.com/vladimirrott/mojo-dllm/issues/142)).
 
+## Benchmark environment
+
+A timed run reports whether it had the machine to itself. `bench/isolation.py` does the checking for
+`bench/run_bench.py`, `bench/eval_gsm8k.py run` and `bench/eval_engine.py run`; `bench/power.py` still owns the
+mains-power check. Each check below is a constant in `bench/isolation.py`, and an arm can change one only by
+passing a `Thresholds` object, which is recorded in the arm's environment file.
+
+**Before an arm starts** (`preflight`, one 5 second sample). A FAIL stops the arm and names the offenders; `--allow-noisy`
+continues and records that it did. A source that cannot be read is a WARN that names the file, never a pass.
+
+| Check | FAIL when | Source |
+|---|---|---|
+| power | on battery (`--allow-battery` turns it into a WARN) | `bench/power.py` |
+| profile | `powerprofilesctl get` or `/sys/firmware/acpi/platform_profile` is not `performance` | LLVM "Benchmarking tips", pyperf "Tune the system for benchmarks" |
+| governor | a CPU is not on `performance`, unless it is `powersave` under `intel_pstate` active with preference `performance` | kernel `admin-guide/pm/intel_pstate` |
+| CPU busy | more than 10% of all CPUs busy over the sample | `/proc/stat` |
+| CPU pressure | PSI CPU `some` avg10 above 5% | kernel `accounting/psi` |
+| swap movement | any page swapped in or out over the sample | `/proc/vmstat` `pswpin`, `pswpout` |
+| memory | `MemAvailable` below 1.25 times the model file, or the model file's size cannot be read | `/proc/meminfo` |
+| thermal | a core or package throttle counter rose over the sample | kernel `admin-guide/thermal/intel_thermal_throttle` |
+| GPU processes (GPU arm) | any compute process on the GPU | `nvidia-smi --query-compute-apps` |
+| GPU memory (GPU arm) | more than 300 MiB used | `nvidia-smi --query-gpu=memory.used` |
+| GPU utilization (GPU arm) | mean of three samples above 5% | `nvidia-smi --query-gpu=utilization.gpu` |
+| GPU clock reasons (GPU arm) | any event reason other than idle (0x1), a software power cap (0x4) and the display clock setting (0x100) | NVML clocks event reasons, `clocks_event_reasons.active` (`clocks_throttle_reasons.active` on older drivers) |
+
+Swap in use is a WARN, because a run that touches swapped pages measures the disk. The preflight also records the
+CPU governor and frequency, `intel_pstate` status and `no_turbo`, the energy performance preference, the load
+average, PSI for CPU and memory, `MemAvailable`, the top CPU processes, the GPU's state (persistence mode,
+compute mode, power draw, temperature, SM clock, maximum SM clock), the systemd timers due within the next hour
+(names only) and the number of lines in the user crontab.
+
+**Around every problem** (`Window`, sampled every 0.5 s). The window subtracts the CPU time of the benchmark's own
+process tree, read from `/proc/PID/stat`, from the busy time in `/proc/stat`, so a benchmark that uses every core is
+not contention. A problem is noisy when:
+
+| Check | Noisy when | Per-window value recorded |
+|---|---|---|
+| other CPU, mean | processes outside the tree use more than 5% of the machine's CPU capacity | `other_cpu_share_mean` |
+| other CPU, peak | the same share exceeds 25% in any 0.5 s sample | `other_cpu_share_max` |
+| swap | any page moved | `swap_pages` |
+| thermal | a throttle counter rose | `thermal_events` |
+| GPU clock reasons (GPU arm) | hardware slowdown (0x8), software or hardware thermal (0x20, 0x40), hardware power brake (0x80), applications clocks (0x2) or sync boost (0x10) was active | `gpu_reasons_seen` |
+| GPU processes (GPU arm) | a compute process outside the benchmark tree appeared | `gpu_foreign_pids` |
+| sampler | the sampler thread died or did not stop | reason `sampler-failed` |
+| unmeasured | a source that exists on this machine could not be read during the window | reason `unmeasured:SOURCE` |
+
+Recorded in every window and never judged: PSI CPU and memory `some` stall time (`psi_cpu_stall_ms`,
+`psi_memory_stall_ms`), because a 12-thread run on 12 CPUs stalls 9% of the time by itself (measured on the
+reference laptop: 24 ms in 10 s idle, 908 ms with 12 busy threads), so no limit separates the run from a neighbour;
+a software power cap (0x4, `gpu_power_capped`), which the laptop's 30 W GPU hits under any compute load; the display
+clock setting (0x100); the SM clock minimum and maximum; the window length; and the processes outside the tree that
+used the most CPU (`other_top_processes`, percent of one core).
+
+A source that does not exist on the host (no NVIDIA GPU on a CPU arm, no `thermal_throttle` files on an AMD CPU) is
+not checked.
+
+The child that exits inside the window is handled: a tree member's ticks are its own `utime + stime` plus the
+`cutime + cstime` of the children it has waited for, and the window compares the sum over the tree between two
+samples. When a child exits and is reaped, its ticks move from the child to its parent and the sum does not drop.
+The Window's `pid` must outlive the window (the runner's own pid does).
+
+The GPU is read every 2 s inside a window (two `nvidia-smi` processes per read, about 0.2 s of wall time and 0.1 s of
+CPU time per read, so about 5% of one core of 12 while a GPU arm runs; they are children of the runner, so they sit in
+the tree and are not counted as other). A GPU event reason that starts and ends between two reads is missed.
+
+**What the checks cannot see.** Kernel threads and interrupt time are inside `busy` and are flagged as other CPU, but
+they cannot be named. Hypervisor and firmware (SMM) time, fan and embedded-controller policy and thermal paste are
+invisible. GPU use by the display server is not a compute app and counts only through the 300 MiB memory limit and
+the utilization sample. Other users' processes are seen, but only at the 0.5 s resolution, and a burst shorter than
+that, or shorter than the 10 ms tick, can fall between samples. A foreign GPU process that starts and ends between
+two GPU reads is missed. Processes in another pid namespace (containers) can differ from the pids `nvidia-smi`
+prints, so a GPU arm inside a container cannot match its own pid. A window can also miss one stolen core for a part
+of a long problem; the numbers are in the next paragraph.
+
+**Sensitivity.** The limits (5% of capacity as a mean, 25% in any sample) were kept after measuring the baseline on
+the reference laptop with the shared machine in its normal state: 60 windows of 10 s around a child that burns one
+core, other-process share of total capacity: mean of the window means 9.0%, median 8.0%, 95th percentile 20.6%,
+maximum 25.3%; peak share mean 19.5%, 95th percentile 39.7%, maximum 47.5%. Only 14 of the 60 windows came out clean at
+these limits, because other sessions were using the machine; the windows named them (`claude`, `python3`, `qemu`).
+Since the baseline is far above 1%, the limits are not tightened. The consequence is a blind spot: one stolen
+core for 30 s of a 90 s problem is 2.8% mean and 8.3% peak of 12 CPUs, and the CPU rules do not flag it. On a quiet
+machine (`scripts/bench-quiet.sh`, no other session) rerun the baseline and lower the limits by passing a `Thresholds`.
+
+Before a problem the runner waits up to 60 seconds for a quiet moment (CPU busy, swap movement and, for a GPU arm, GPU
+processes), then runs it inside a window. A noisy problem is run again, up to `--isolation-retries`
+times (default 2); after that the row is kept with its reasons. `bench/run_bench.py` keeps its own `busy_threshold`
+and `max_quiet_wait_s` config keys for this wait, and records `cpu_busy_before` as before.
+
+**Reading `ARM.env.json`.** The eval runners write `bench/eval/runs/ARM.env.json` and `run_bench.py` writes
+`bench/results/env/NAME.env.json`. It holds one entry per start of the arm under `sessions`: the preflight report
+(each check with its status and detail), `snapshot_start` and `snapshot_end`, the `thresholds` used, `tuned` (the
+profile before and after `--tune`), `bench_quiet` (true when the run was started under `scripts/bench-quiet.sh`),
+`preflight_failed_allowed` (true when `--allow-noisy` continued past a FAIL), a `session_id`, the retry limit and tool
+versions. Each row of an arm file carries `isolation`: the window values above, `clean`, `reasons`, `retries` (how
+many repeats this problem took), `noisy`, `cpu_busy_before`, `waited_s`, `session` (the `session_id` of the start
+that wrote the row), `allow_noisy` and `preflight_failed_allowed`.
+
+`eval_gsm8k.py compare` adds `generate_s_mean_clean` (the mean over the problems whose window was clean in both
+arms, `null` when there is none), `clean_rows`, `noisy_rows` per arm and `unchecked_rows` per arm (rows written
+before windows existed). Accuracy is still computed over every row.
+
+**Quieting the machine.** `--tune` sets the power profile to `performance` through `powerprofilesctl`, reads it back,
+and restores the previous profile on exit, on an exception, on Ctrl-C and on SIGTERM. `sudo scripts/bench-quiet.sh --
+COMMAND` additionally stops the system timers `sysstat-collect`, `apt-daily`, `apt-daily-upgrade`, `fwupd-refresh`,
+`anacron`, `man-db` and `motd-news`, turns on NVIDIA persistence mode and locks the GPU clocks where the driver
+allows it, runs the command, and puts everything back; it never edits cron files. After a SIGKILL or a power loss no
+trap can run: `sudo scripts/bench-quiet.sh --restore` undoes the script's changes from its state file, and `--tune`
+(which keeps no state file) leaves the profile at `performance`, so run `powerprofilesctl set PREVIOUS` with the
+profile in `tuned.previous` of the arm's environment file. The one-minute user cron job is not
+stopped: a window that sees it is noisy and the problem is repeated. Not covered: kernel boot parameters (`isolcpus`,
+`nohz_full`) and BIOS settings. The rows keep the 12 threads they were measured with, so no core is left to pin.
+
+**Rows measured before this change.** The published rows above (and the arms under `bench/eval/` written before
+`isolation` existed) were not checked this way. They have `cpu_busy_before` for the CPU rows and no window. Do
+not read a ratio from them closer than their recorded spread.
+
 ## Steps and quality
 
 A diffusion model commits `tokens / steps` tokens per step. The table above
