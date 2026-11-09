@@ -54,6 +54,16 @@ def test_cpu_loader_rejects_decodable_matrix() raises:
         _ = _load_matrix(g, "q8_0", 4, 96)
 
 
+def test_gpu_loader_refuses_a_short_embedding_before_a_device_exists() raises:
+    # ModelConfig runs before the device is created, so this needs no GPU.
+    with assert_raises(
+        contains="tensor shape mismatch for token_embd.weight: [256, 6]"
+    ):
+        _ = GpuDiffusionLM(
+            "tests/fixtures/metadata/embd-rows-short.gguf", max_tokens=4
+        )
+
+
 def test_gpu_planner_rejects_decodable_matrix_before_allocation() raises:
     var g = GGUFFile("tests/fixtures/dequant-types.gguf")
     var plan = _Planner()

@@ -201,11 +201,6 @@ struct GpuDiffusionLM(DenoisingModel, Movable):
                 + " has "
                 + String(self.ctx.compute_capability())
             )
-        if self.embd.ne0 != c.hidden:
-            raise Error(
-                "tensor shape mismatch for token_embd.weight: "
-                + self.embd.shape_str()
-            )
         var kvd = c.kv_dim()
 
         # Plan the device layout, checking every shape before anything moves.

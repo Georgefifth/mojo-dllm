@@ -200,6 +200,13 @@ semantic versioning (0.y: minor bumps may break things).
   bad range used to reach `madvise`, where `MADV_DONTNEED` outside the map
   zero-fills heap pages. `Mapping.ptr()` returns a pointer with an immutable
   origin, so a store through it no longer compiles (#216).
+- For LLaDA and Dream, `ModelConfig` checks that `token_embd.weight` and, when
+  the file has one, `output.weight` are `[hidden, vocab]`, with the vocabulary
+  taken from `<arch>.vocab_size` or from the rows of `output.weight`. A table
+  with fewer rows than the vocabulary let a token id pass the guard and read
+  past the tensor. The check runs before any loader and replaces the width test
+  that the CPU and the GPU loader each carried; the error names the tensor,
+  both shapes and the keys that set them (#198).
 - Model configuration rejects incompatible RoPE widths/scaling and attention
   key lengths, and unsupported-architecture errors list LLaDA and Dream.
 - Matrix load errors name the tensor and distinguish an unsupported type from

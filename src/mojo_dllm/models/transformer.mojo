@@ -169,10 +169,12 @@ struct ModelConfig(Copyable, ImplicitlyCopyable, Movable):
         self.eps = g.get_f32(a + "attention.layer_norm_rms_epsilon")
         self.theta = g.get_f32_or(a + "rope.freq_base", 10000.0)
         self.mask_id = g.get_int("tokenizer.ggml.mask_token_id")
-        if g.has_key(a + "vocab_size"):
-            self.vocab = g.get_int(a + "vocab_size")
+        var vocab_source = a + "vocab_size"
+        if g.has_key(vocab_source):
+            self.vocab = g.get_int(vocab_source)
         else:
             self.vocab = g.tensor("output.weight").n_rows()
+            vocab_source = "the rows of output.weight"
         # llama.cpp: LLM_ARCH_LLADA -> ROPE_TYPE_NORM, LLM_ARCH_DREAM -> ROPE_TYPE_NEOX.
         self.rope_neox = self.arch == "dream"
         # LLaDA scores position i from row i; Dream (like its Qwen2 base)
@@ -220,6 +222,9 @@ struct ModelConfig(Copyable, ImplicitlyCopyable, Movable):
             raise Error(
                 a + "rope.scaling.factor must be 1, got " + String(factor)
             )
+        _check_embedding_and_output_shapes(
+            g, self.hidden, self.vocab, a + "embedding_length", vocab_source
+        )
 
     def kv_dim(self) -> Int:
         """Width of K or V when every layer has the same shape (LLaDA, Dream).
@@ -315,6 +320,34 @@ def _expect_shape(
             + why
             + ")"
         )
+
+
+def _check_embedding_and_output_shapes(
+    g: GGUFFile,
+    hidden: Int,
+    vocab: Int,
+    hidden_key: String,
+    vocab_source: String,
+) raises:
+    """`token_embd.weight` and, when present, `output.weight` are [hidden, vocab].
+
+    The token guard of the forward pass is `tok < vocab` and the lookup reads
+    row `tok` of the embedding, so a table with fewer rows than `vocab` reads
+    past the tensor. A tensor that the file lacks is named by its loader.
+    """
+    var why = (
+        hidden_key
+        + " "
+        + String(hidden)
+        + ", vocabulary "
+        + String(vocab)
+        + " from "
+        + vocab_source
+    )
+    if g.has_tensor(GEMMA_TOKEN_EMBD):
+        _expect_shape(g, GEMMA_TOKEN_EMBD, [hidden, vocab], why)
+    if g.has_tensor("output.weight"):
+        _expect_shape(g, "output.weight", [hidden, vocab], why)
 
 
 def _read_diffusion_gemma(g: GGUFFile) raises -> ModelConfig:
@@ -815,11 +848,6 @@ struct DiffusionLM(DenoisingModel, Movable):
         self.max_tokens = max_tokens
         self.embd = self.gguf.tensor("token_embd.weight")
         check_embedding_type(self.embd)
-        if self.embd.ne0 != c.hidden:
-            raise Error(
-                "tensor shape mismatch for token_embd.weight: "
-                + self.embd.shape_str()
-            )
         self.layers = List[Layer](capacity=c.n_layers)
         for i in range(c.n_layers):
             self.layers.append(Layer(self.gguf, i, c))

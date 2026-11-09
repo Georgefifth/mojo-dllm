@@ -562,6 +562,45 @@ def metadata_cases() -> None:
                                     "llada.rope.scaling.factor": 1.0})
 
 
+def llada_shape_cases() -> None:
+    """LLaDA files whose token_embd or output tensor disagrees with the vocabulary or the hidden size (#198).
+
+    Hidden size 256, vocabulary 8, one layer; the two tensors hold zero Q4_K blocks and no layer tensors follow,
+    because the check must refuse the file before any loader asks for one.
+    """
+    out = OUT / "metadata"
+    out.mkdir(parents=True, exist_ok=True)
+
+    def write(name: str, embd: tuple[int, int], output: tuple[int, int] | None, vocab_key: bool = True) -> None:
+        w = GGUFWriter(str(out / (name + ".gguf")), "llada")
+        w.add_uint32("llada.block_count", 1)
+        w.add_uint32("llada.embedding_length", 256)
+        w.add_uint32("llada.attention.head_count", 2)
+        w.add_uint32("llada.feed_forward_length", 256)
+        w.add_float32("llada.attention.layer_norm_rms_epsilon", 1e-5)
+        w.add_uint32("tokenizer.ggml.mask_token_id", 7)
+        if vocab_key:
+            w.add_uint32("llada.vocab_size", 8)
+        for tensor, shape in (("token_embd.weight", embd), ("output.weight", output)):
+            if shape is None:
+                continue
+            width, rows = shape
+            raw = np.zeros((rows, width // QK_K * Q4K_BYTES), dtype=np.uint8)
+            w.add_tensor(tensor, raw, raw_shape=raw.shape, raw_dtype=Q.Q4_K)
+        w.write_header_to_file()
+        w.write_kv_data_to_file()
+        w.write_tensors_to_file()
+        w.close()
+
+    write("shapes-valid", (256, 8), (256, 8))
+    write("embd-rows-short", (256, 6), (256, 8))
+    write("embd-rows-long", (256, 10), (256, 8))
+    write("output-rows-short", (256, 8), (256, 6))
+    write("embd-width", (512, 8), (256, 8))
+    write("vocab-from-output", (256, 6), (256, 8), vocab_key=False)
+    write("output-absent", (256, 8), None)
+
+
 GEMMA_ARCH = "diffusion-gemma"
 GEMMA_KEY = GEMMA_ARCH + "."
 # The real file (diffusiongemma-26B-A4B-it-Q4_K_M.gguf) has 30 blocks, hidden size 2816, 16 heads and
@@ -906,6 +945,7 @@ def main() -> None:
     dequant_types()
     unsupported_embedding()
     metadata_cases()
+    llada_shape_cases()
     entropy_rows()
     diffusion_gemma()
     gemma4_tiny()

@@ -237,6 +237,80 @@ def test_a_failed_pass_invalidates_the_cache() raises:
         m.forward_window(toks, 3, 7, rows, out.ptr())
 
 
+def _refuses_config(name: String, message: String) raises:
+    var g = GGUFFile(FIX + "metadata/" + name + ".gguf")
+    with assert_raises(contains=message):
+        _ = ModelConfig(g)
+
+
+def test_config_accepts_embedding_and_output_that_match_the_vocabulary() raises:
+    var c = ModelConfig(GGUFFile(FIX + "metadata/shapes-valid.gguf"))
+    assert_equal(c.vocab, 8)
+    assert_equal(c.hidden, 256)
+    # A file without an output tensor loads here; the loader names it later.
+    _ = ModelConfig(GGUFFile(FIX + "metadata/output-absent.gguf"))
+
+
+def test_config_refuses_embedding_rows_short_of_the_vocabulary() raises:
+    _refuses_config(
+        "embd-rows-short",
+        (
+            "tensor shape mismatch for token_embd.weight: [256, 6], expected"
+            " [256, 8] (llada.embedding_length 256, vocabulary 8 from"
+            " llada.vocab_size)"
+        ),
+    )
+
+
+def test_config_refuses_embedding_rows_beyond_the_vocabulary() raises:
+    _refuses_config(
+        "embd-rows-long",
+        (
+            "tensor shape mismatch for token_embd.weight: [256, 10], expected"
+            " [256, 8]"
+        ),
+    )
+
+
+def test_config_refuses_output_rows_short_of_the_vocabulary() raises:
+    _refuses_config(
+        "output-rows-short",
+        "tensor shape mismatch for output.weight: [256, 6], expected [256, 8]",
+    )
+
+
+def test_config_refuses_an_embedding_of_the_wrong_width() raises:
+    _refuses_config(
+        "embd-width",
+        (
+            "tensor shape mismatch for token_embd.weight: [512, 8], expected"
+            " [256, 8]"
+        ),
+    )
+
+
+def test_vocabulary_read_from_the_output_rows_must_match_the_embedding() raises:
+    _refuses_config(
+        "vocab-from-output",
+        (
+            "tensor shape mismatch for token_embd.weight: [256, 6], expected"
+            " [256, 8] (llada.embedding_length 256, vocabulary 8 from the rows"
+            " of output.weight)"
+        ),
+    )
+
+
+def test_cpu_loader_refuses_a_short_embedding_before_any_layer() raises:
+    # The file has no layer tensors: without the check, the loader would stop at
+    # blk.0.attn_norm.weight, and a token id of 7 would read past the 6 rows.
+    with assert_raises(
+        contains="tensor shape mismatch for token_embd.weight: [256, 6]"
+    ):
+        _ = DiffusionLM(
+            FIX + "metadata/embd-rows-short.gguf", threads=1, max_tokens=4
+        )
+
+
 def test_config_rejects_missing_layers() raises:
     var g = GGUFFile(FIX + "metadata/missing-llada.block_count.gguf")
     with assert_raises(

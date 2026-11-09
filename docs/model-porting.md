@@ -99,6 +99,12 @@ the tensor and the keys that set its shape:
 - `rope_freqs.weight` has `key_length / 2` entries when any layer is global, and
   `token_embd.weight` is `embedding_length` wide.
 
+For LLaDA and Dream the same kind of check covers the two vocabulary-sized
+tensors: `token_embd.weight` and, when the file has it, `output.weight` must be
+`[embedding_length, vocabulary]`, where the vocabulary is `<arch>.vocab_size` or
+the rows of `output.weight`. `ModelConfig` raises `tensor shape mismatch for
+<name>: [..], expected [..]` before any loader runs, on the CPU and on the GPU.
+
 To convert a Hugging Face source with llama.cpp and quantize the result:
 
 ```bash
