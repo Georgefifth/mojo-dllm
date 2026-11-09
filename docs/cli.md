@@ -159,3 +159,32 @@ ERROR: no GPU found: the GPU backend needs an NVIDIA GPU with compute capability
 With `--device gpu`, setting `MOJO_DLLM_GPU_PROFILE=1` makes `--verbose` split
 a step into GEMM, attention and LM head time. It synchronizes the GPU after
 each kernel group to measure them, so leave it off when you benchmark.
+
+## Environment variables
+
+`run` reads a default for ten value flags from the environment. A flag on
+the command line wins over its variable, and an empty variable counts as
+unset. Boolean flags and `--prompt` have no variable.
+
+| Variable | Flag |
+|---|---|
+| `MOJO_DLLM_MODEL` | `--model` |
+| `MOJO_DLLM_MAX_TOKENS` | `--max-tokens` |
+| `MOJO_DLLM_STEPS` | `--steps` |
+| `MOJO_DLLM_BLOCK_LENGTH` | `--block-length` |
+| `MOJO_DLLM_SEED` | `--seed` |
+| `MOJO_DLLM_TEMPERATURE` | `--temperature` |
+| `MOJO_DLLM_THREADS` | `--threads` |
+| `MOJO_DLLM_DEVICE` | `--device` |
+| `MOJO_DLLM_REMASKING` | `--remasking` |
+| `MOJO_DLLM_THRESHOLD` | `--threshold` |
+
+With `--verbose`, each value that came from a variable is reported on
+stderr. A bad numeric value names its variable in the error. The launcher
+command `./mojo-dllm run` always passes `--model` and `--device` to the
+binary, so `MOJO_DLLM_MODEL` and `MOJO_DLLM_DEVICE` change nothing there.
+Unset these variables before you run `./mojo-dllm setup`,
+`scripts/ci-local.sh`, the scripts in `bench/` or `scripts/gpu_profile.py`:
+none of them passes `--seed`, `--temperature`, `--remasking` or
+`--threshold`, and the checks in `scripts/check_visual.sh` expect fixed
+messages, so an exported value would change a result or fail a gate.

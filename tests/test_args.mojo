@@ -6,6 +6,7 @@ from cli.args import (
     edit_distance,
     env_flags,
     env_name,
+    env_problem,
     parse_csv_ints,
     suggest_flag,
     unknown_flag_error,
@@ -271,6 +272,83 @@ def test_a_flag_like_value_does_not_hide_a_flag() raises:
         ),
     )
     assert_equal(names, List[String](["steps"]))
+
+
+def test_env_flags_are_exactly_the_ten_documented_flags() raises:
+    # The review gap from #176: `test_env_flags_are_value_flags_of_run` proves
+    # membership but not the exact set, so dropping `threshold` or `seed` from
+    # the table would leave every test green while a documented variable
+    # silently stopped working. Pin the order too: it is the order `--verbose`
+    # reports and the docs table lists.
+    assert_equal(
+        env_flags(),
+        List[String](
+            [
+                "model",
+                "max-tokens",
+                "steps",
+                "block-length",
+                "seed",
+                "temperature",
+                "threads",
+                "device",
+                "remasking",
+                "threshold",
+            ]
+        ),
+    )
+
+
+def test_env_problem_names_the_variable() raises:
+    assert_equal(
+        env_problem(
+            (
+                "flag --steps needs an integer, got 'abc'\nsee: mojo-dllm run"
+                " --help"
+            ),
+            List[String](["steps"]),
+        ),
+        (
+            "flag --steps needs an integer, got 'abc' (from MOJO_DLLM_STEPS)\n"
+            + "see: mojo-dllm run --help"
+        ),
+    )
+    assert_equal(
+        env_problem(
+            "flag --steps must be at least 1, got 0\nsee: mojo-dllm run --help",
+            List[String](["steps"]),
+        ),
+        (
+            "flag --steps must be at least 1, got 0 (from MOJO_DLLM_STEPS)\n"
+            + "see: mojo-dllm run --help"
+        ),
+    )
+    assert_equal(
+        env_problem(
+            "flag --temperature needs a finite number, got 'warm'\n"
+            + "see: mojo-dllm run --help",
+            List[String](["temperature"]),
+        ),
+        (
+            "flag --temperature needs a finite number, got 'warm'"
+            + " (from MOJO_DLLM_TEMPERATURE)\nsee: mojo-dllm run --help"
+        ),
+    )
+
+
+def test_env_problem_leaves_a_missing_value_alone() raises:
+    # `needs a value` means the user typed the flag last with nothing after
+    # it; the environment did not supply this value, so blaming the variable
+    # would be wrong.
+    var msg = "flag --steps needs a value\nsee: mojo-dllm run --help"
+    assert_equal(env_problem(msg, List[String](["steps"])), msg)
+
+
+def test_env_problem_ignores_flags_not_from_env() raises:
+    var msg = (
+        "flag --steps needs an integer, got 'abc'\nsee: mojo-dllm run --help"
+    )
+    assert_equal(env_problem(msg, List[String](["threads"])), msg)
 
 
 def main() raises:

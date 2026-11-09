@@ -178,6 +178,43 @@ def env_flags() -> List[String]:
     )
 
 
+def env_problem(problem: String, from_env: List[String]) -> String:
+    """Name the environment variable that supplied a bad numeric value.
+
+    A value the user never typed can still be wrong, so a numeric-flag problem
+    whose flag came from the environment gets a ` (from MOJO_DLLM_…)` suffix
+    before the `\\nsee: ` help line. Only the messages `_number_problems`
+    produces match (`needs an integer`, `needs a finite number`,
+    `must be at least`): `needs a value` means the flag sat last on the command
+    line with nothing after it, which the environment did not supply, so it is
+    left alone rather than blaming a variable for a typed flag. Flags that
+    `check_args` does not validate (`--model`, `--device`, `--remasking`,
+    `--threshold`) fail later with their own message and get no suffix.
+    """
+    if len(from_env) == 0:
+        return problem
+    var marker = "\nsee: "
+    var at = problem.find(marker)
+    if at < 0:
+        return problem
+    # `find` returns a byte offset, so slice by byte. All the matched text is
+    # ASCII (`flag --name …`), so byte and codepoint offsets coincide.
+    var head = String(problem[byte=:at])
+    var tail = String(problem[byte=at:])
+    for f in from_env:
+        var prefix = "flag --" + f + " "
+        if not head.startswith(prefix):
+            continue
+        var rest = String(head[byte = prefix.byte_length() :])
+        if (
+            rest.startswith("needs an integer")
+            or rest.startswith("needs a finite number")
+            or rest.startswith("must be at least")
+        ):
+            return head + " (from " + env_name(f) + ")" + tail
+    return problem
+
+
 def with_env(
     raw: List[String],
     value_flags: List[String],
