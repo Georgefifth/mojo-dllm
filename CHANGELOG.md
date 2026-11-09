@@ -174,6 +174,12 @@ semantic versioning (0.y: minor bumps may break things).
 
 ### Changed
 
+- `run` and `logits` check every option that the flags alone decide before the model file is opened (issue #202):
+  `--threshold` (finite, 0 to 1), `--prev-temp-inv` (finite, above 0), `--device`, `--path`, `--remasking`, and a
+  `--block-length` or `--steps` that does not divide `--max-tokens`. Each exits with status 2 and names the flag.
+  A default block length that does not divide `--max-tokens`, and a `--remasking` the architecture does not take, are
+  refused once the header is read, before any weight is mapped. `logits` on a DiffusionGemma file checks `--rows` and
+  the size of `--prev` against the header's canvas length before the weights load.
 - The toolchain comes from uv (`uv sync --frozen`, `uv.lock`) instead of pixi, and
   the `./mojo-dllm` launcher wraps `setup`, `pull`, `run` and `doctor`. The
   binary exits 2 on a usage error and names the flag, command or value that

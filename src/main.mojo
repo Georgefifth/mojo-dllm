@@ -221,6 +221,61 @@ def _equals_advice(a: Args, spec: CommandSpec) -> String:
     return String("")
 
 
+def remasking_names() -> List[String]:
+    """Every `--remasking` value some architecture takes: LLaDA the first two,
+    Dream the last three (`low_confidence` means `entropy` there)."""
+    return [
+        "low_confidence",
+        "random",
+        "entropy",
+        "maskgit_plus",
+        "topk_margin",
+    ]
+
+
+def schedule_problem(a: Args) raises -> String:
+    """Why the block length or the steps cannot split `--max-tokens`, or "".
+
+    LLaDA decodes `--max-tokens` in blocks of `--block-length`, and spreads
+    `--steps` evenly over the blocks. The sampler refuses a split that does
+    not divide, but only after the model is loaded; the numbers are known
+    from the flags (and the defaults) alone.
+    """
+    var gen = Int(a.get_or("max-tokens", "128"))
+    var explicit = a.has("block-length")
+    var block = Int(a.values["block-length"]) if explicit else min(32, gen)
+    var steps = Int(a.get_or("steps", String(gen)))
+    if gen % block != 0:
+        if explicit:
+            return (
+                "flag --max-tokens "
+                + String(gen)
+                + " is not a multiple of --block-length "
+                + String(block)
+            )
+        return (
+            "flag --max-tokens "
+            + String(gen)
+            + " is not a multiple of the default block length "
+            + String(block)
+            + "; pass --block-length with a divisor of it"
+        )
+    var blocks = gen // block
+    if steps % blocks != 0:
+        return (
+            "flag --steps "
+            + String(steps)
+            + " is not a multiple of the number of blocks "
+            + String(blocks)
+            + " (--max-tokens "
+            + String(gen)
+            + " / block length "
+            + String(block)
+            + ")"
+        )
+    return String("")
+
+
 def _number_problems(a: Args) raises -> String:
     """The first numeric flag whose value can never be valid, or "".
 
@@ -280,6 +335,53 @@ def _number_problems(a: Args) raises -> String:
             return "flag --temperature needs a finite number, got '" + raw + "'"
         if t < 0:
             return "flag --temperature must be at least 0, got " + raw
+    for flag in ["threshold", "prev-temp-inv"]:
+        if not a.has(flag):
+            continue
+        var raw = a.values[flag]
+        var x = Float64(0)
+        var parsed = True
+        try:
+            x = Float64(raw)
+        except:
+            parsed = False
+        if not parsed or not isfinite(x):
+            return (
+                "flag --" + flag + " needs a finite number, got '" + raw + "'"
+            )
+        if flag == "threshold" and (x < 0 or x > 1):
+            return "flag --threshold must be between 0 and 1, got " + raw
+        if flag == "prev-temp-inv" and x <= 0:
+            return "flag --prev-temp-inv must be above 0, got " + raw
+    if a.has("device"):
+        var device = a.values["device"]
+        if device != "cpu" and device != "gpu":
+            return "flag --device must be cpu or gpu, got '" + device + "'"
+    if a.has("path"):
+        var kind = a.values["path"]
+        if kind != "unified" and kind != "cached":
+            return "flag --path must be unified or cached, got '" + kind + "'"
+    if a.has("remasking"):
+        var name = a.values["remasking"]
+        var known = False
+        for candidate in remasking_names():
+            if candidate == name:
+                known = True
+        if not known:
+            return (
+                "flag --remasking must be one of "
+                + ", ".join(remasking_names())
+                + ", got '"
+                + name
+                + "'"
+            )
+        if name == "random" and a.has("threshold"):
+            if Float64(a.values["threshold"]) > 0:
+                return "flag --threshold needs low_confidence remasking"
+    if a.has("block-length"):
+        var schedule = schedule_problem(a)
+        if schedule.byte_length() > 0:
+            return schedule
     for flag in ["tokens", "rows"]:
         if not a.has(flag):
             continue
@@ -472,6 +574,22 @@ def check_arch_flags(a: Args, arch: String) raises:
             raise Error(
                 "--" + flag + " applies to diffusion-gemma only, not " + arch
             )
+    var remasking = a.get_or("remasking", "low_confidence")
+    if arch == "llada":
+        if remasking != "low_confidence" and remasking != "random":
+            raise Error(
+                "--remasking "
+                + remasking
+                + " does not apply to llada (low_confidence or random)"
+            )
+        var schedule = schedule_problem(a)
+        if schedule.byte_length() > 0:
+            raise Error(schedule)
+    elif arch == "dream" and remasking == "random":
+        raise Error(
+            "--remasking random does not apply to dream (entropy,"
+            " maskgit_plus or topk_margin; low_confidence means entropy)"
+        )
 
 
 def stop_json(res: GenResult) -> String:
@@ -970,22 +1088,30 @@ def _logits_gemma(
         raise Error("--prev and --prev-temp-inv go together")
     if path_kind != "unified" and path_kind != "cached":
         raise Error("--path is unified or cached, got '" + path_kind + "'")
-    var m = DiffusionGemma(path, threads=threads, max_tokens=len(tokens))
-    var c = m.config()
+    var header = GGUFFile(path)
+    var c = ModelConfig(header)
+    _ = header^
     var first = len(tokens) - c.canvas
+    if first < 0:
+        raise Error(
+            "the token count "
+            + String(len(tokens))
+            + " is below the canvas length "
+            + String(c.canvas)
+        )
     var expected = String("")
     for i in range(c.canvas):
         expected += ("," if i > 0 else "") + String(first + i)
     var given = String("")
     for i in range(len(rows)):
         given += ("," if i > 0 else "") + String(rows[i])
-    if first < 0 or given != expected:
+    if given != expected:
         raise Error(
             GEMMA_ARCH
             + " scores the "
             + String(c.canvas)
             + " canvas positions, the last of the tokens: --rows must be "
-            + (expected if first >= 0 else "positions inside the tokens")
+            + expected
             + ", got "
             + given
         )
@@ -1010,6 +1136,8 @@ def _logits_gemma(
         var src = F32Ptr(unsafe_from_address=prev.addr)
         for i in range(n):
             out[i] = src.unsafe_load(i)
+        _ = prev^
+    var m = DiffusionGemma(path, threads=threads, max_tokens=len(tokens))
     if path_kind == "cached":
         var prompt = List[Int]()
         var canvas = List[Int]()

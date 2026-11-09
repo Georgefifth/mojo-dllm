@@ -34,7 +34,7 @@ stops the run (see [Errors](#errors)).
 | `--block-length N` | 32, or `--max-tokens` when that is smaller | LLaDA's semi-autoregressive block size; must divide `--max-tokens`. Dream ignores it |
 | `--temperature T` | 0 | LLaDA: 0 is greedy; above 0 adds Gumbel noise as LLaDA does. Dream supports only 0 and stops with an error above it |
 | `--remasking S` | `low_confidence` | LLaDA: `low_confidence` or `random`. Dream: `entropy` (the default), `maskgit_plus`, `topk_margin` |
-| `--threshold P` | 0 (off) | LLaDA: each step also commits every masked token whose confidence is at least P, so easy blocks finish in fewer steps (Fast-dLLM's parallel decoding). A step still commits at least what the schedule says. Not exact: see [Benchmarks](benchmarks.md#steps-and-quality) for its measured effect on accuracy |
+| `--threshold P` | 0 (off) | A number from 0 to 1. LLaDA: each step also commits every masked token whose confidence is at least P, so easy blocks finish in fewer steps (Fast-dLLM's parallel decoding). A step still commits at least what the schedule says. Not exact: see [Benchmarks](benchmarks.md#steps-and-quality) for its measured effect on accuracy |
 | `--dual-cache` | off | LLaDA: cache every position's keys and values and, inside a block, recompute only that block's rows (Fast-dLLM's DualCache). The cache is refreshed at the first step of each block. Not exact: the prompt and later blocks see keys from the block's first step; see [Benchmarks](benchmarks.md#steps-and-quality) for its measured effect on accuracy. Cannot combine with `--full-logits` |
 | `--seed N` | 42 | seeds this program's PRNG (it does not reproduce a PyTorch run). It fixes DiffusionGemma's random canvas and draws as well |
 | `--eb-steps N` | 48 | DiffusionGemma: most denoising steps (use it instead of `--steps`, which that model refuses) |
@@ -83,6 +83,15 @@ Without colour, newly committed tokens have no highlight. Redirected frames
 contain no ANSI escapes. With `--visual --json`, frames still go to stdout
 before the JSON line; consumers should select the line starting with `{`.
 
+The checks that need only the flags run before the model file is opened, and each exits with status 2 and names the flag:
+`--threshold` outside 0 to 1 or not finite, `--device` other than `cpu` or `gpu`, `--remasking` outside the five names
+above, `--threshold` above 0 with `--remasking random`, and a `--block-length` that does not divide `--max-tokens` or a
+`--steps` that is not a multiple of the number of blocks. When `--block-length` is absent its default (32, or
+`--max-tokens` when smaller) depends on the architecture, so the check for it runs once the file's header is read, still
+before any weight is mapped, and exits with status 1: `flag --max-tokens 100 is not a multiple of the default block
+length 32`. The same header check refuses a `--remasking` value that the file's architecture does not take (`entropy`,
+`maskgit_plus` and `topk_margin` for LLaDA, `random` for Dream).
+
 Invalid `--visual-interval` values and use without `--visual` exit with status
 1 before model loading. The messages name `--visual-interval`: `must be at
 least 1`, `needs --visual`, or `needs an integer`.
@@ -130,7 +139,13 @@ architecture alone and are refused on the others:
 - `--prev FILE` names the previous denoising step's canvas logits, `[canvas,
   vocab]` f32 as this command writes them, and turns self-conditioning on.
   `--prev-temp-inv X`, which must come with it, is 1 divided by the temperature
-  of that previous step (1.25 for the first step's 0.8).
+  of that previous step (1.25 for the first step's 0.8). It must be finite and
+  above 0, and `--path` must be `unified` or `cached`; both are checked before
+  any model is read.
+
+`--rows` and the size of the `--prev` file are checked against the canvas length
+that the file's header declares, before a weight is mapped, so a wrong `--rows`
+costs no model load.
 
 ## Errors
 
@@ -147,7 +162,7 @@ change nothing; every other error exits with status 1.
 | `ERROR: unknown flag --model=x for 'run'` | Flags take their value as the next argument. The next line says `flags take their value as the next argument: --model x` |
 | `ERROR: flag --prompt needs a value` | A value flag is the last argument |
 | `ERROR: flag --steps needs an integer, got 'abc'` | A numeric flag holds text, or a number too large for 64 bits. `--temperature` needs a finite number and `--tokens` and `--rows` need comma-separated integers |
-| `ERROR: flag --steps must be at least 1, got 0` | `--max-tokens`, `--steps`, `--block-length` and `--threads` need at least 1, and `--temperature` at least 0. The check runs before the model is mapped |
+| `ERROR: flag --steps must be at least 1, got 0` | `--max-tokens`, `--steps`, `--block-length` and `--threads` need at least 1, and `--temperature` at least 0. `--threshold` needs a number from 0 to 1 and `--prev-temp-inv` one above 0. The check runs before the model is mapped |
 | `ERROR: cannot open model file PATH: No such file or directory` | The path is wrong. The reason is the operating system's. The next line is `to download a model, run: ./mojo-dllm pull` |
 | `ERROR: cannot open model file PATH: Permission denied` | The open failed for a reason other than a missing file, such as `Not a directory`. The operating system names the reason. No download hint follows, because `pull` would not fix it |
 | `ERROR: is a directory: PATH` | The model path names a directory |

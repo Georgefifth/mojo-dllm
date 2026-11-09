@@ -622,7 +622,7 @@ def test_entropy_bound_flags_belong_to_diffusion_gemma() raises:
     check_arch_flags(with_eb, "diffusion-gemma")
     var plain = Args(["x", "run"], spec.values, spec.booleans)
     check_arch_flags(plain, "llada")
-    var steps = Args(["x", "run", "--steps", "9"], spec.values, spec.booleans)
+    var steps = Args(["x", "run", "--steps", "8"], spec.values, spec.booleans)
     with assert_raises(contains="use --eb-steps"):
         check_arch_flags(steps, "diffusion-gemma")
     check_arch_flags(steps, "llada")
@@ -1095,6 +1095,181 @@ def test_logits_flag_errors() raises:
             DG_TINY, 1, tokens, _rows(9), path, "unified", short, 1.25
         )
     remove(short)
+
+
+def _same(command: String, rest: List[String], want: String) raises:
+    assert_equal(
+        _check(command, rest), want + "\nsee: mojo-dllm " + command + " --help"
+    )
+
+
+def test_run_option_values_are_checked_before_the_model_loads() raises:
+    var base = List[String](["--model", "m", "--prompt", "p"])
+    var cases = List[List[String]]()
+    cases.append(["--threshold", "abc"])
+    cases.append(["--threshold", "nan"])
+    cases.append(["--threshold", "inf"])
+    cases.append(["--threshold", "-1"])
+    cases.append(["--threshold", "1.5"])
+    cases.append(["--device", "foo"])
+    cases.append(["--remasking", "foo"])
+    var wants = List[String]()
+    wants.append("flag --threshold needs a finite number, got 'abc'")
+    wants.append("flag --threshold needs a finite number, got 'nan'")
+    wants.append("flag --threshold needs a finite number, got 'inf'")
+    wants.append("flag --threshold must be between 0 and 1, got -1")
+    wants.append("flag --threshold must be between 0 and 1, got 1.5")
+    wants.append("flag --device must be cpu or gpu, got 'foo'")
+    wants.append(
+        "flag --remasking must be one of low_confidence, random, entropy,"
+        " maskgit_plus, topk_margin, got 'foo'"
+    )
+    for i in range(len(cases)):
+        var rest = base.copy()
+        for x in cases[i]:
+            rest.append(x)
+        _same("run", rest, wants[i])
+    var ok = base.copy()
+    for x in List[String](["--threshold", "0.9", "--device", "gpu"]):
+        ok.append(x)
+    assert_equal(_check("run", ok), "")
+    var random = base.copy()
+    for x in List[String](["--remasking", "random", "--threshold", "0.5"]):
+        random.append(x)
+    _same("run", random, "flag --threshold needs low_confidence remasking")
+
+
+def test_the_block_and_step_split_is_checked_before_the_model_loads() raises:
+    var base = List[String](["--model", "m", "--prompt", "p"])
+    var a = base.copy()
+    for x in List[String](["--max-tokens", "100", "--block-length", "32"]):
+        a.append(x)
+    _same(
+        "run",
+        a,
+        "flag --max-tokens 100 is not a multiple of --block-length 32",
+    )
+    var b = base.copy()
+    for x in List[String](
+        ["--max-tokens", "64", "--block-length", "32", "--steps", "3"]
+    ):
+        b.append(x)
+    _same(
+        "run",
+        b,
+        (
+            "flag --steps 3 is not a multiple of the number of blocks 2"
+            " (--max-tokens 64 / block length 32)"
+        ),
+    )
+    var fine = base.copy()
+    for x in List[String](
+        ["--max-tokens", "64", "--block-length", "32", "--steps", "4"]
+    ):
+        fine.append(x)
+    assert_equal(_check("run", fine), "")
+    # No --block-length: the default 32 depends on the architecture, which only
+    # the file says, so the header check names the default.
+    var d = base.copy()
+    d.append("--max-tokens")
+    d.append("100")
+    assert_equal(_check("run", d), "")
+    var spec = command_spec("run")
+    var args = Args(
+        ["x", "run", "--prompt", "p", "--max-tokens", "100"],
+        spec.values,
+        spec.booleans,
+    )
+    with assert_raises(
+        contains=(
+            "flag --max-tokens 100 is not a multiple of the default block"
+            " length 32; pass --block-length"
+        )
+    ):
+        check_arch_flags(args, "llada")
+    check_arch_flags(args, "dream")
+
+
+def test_remasking_must_suit_the_architecture_before_the_model_loads() raises:
+    var spec = command_spec("run")
+    var entropy = Args(
+        ["x", "run", "--prompt", "p", "--remasking", "entropy"],
+        spec.values,
+        spec.booleans,
+    )
+    with assert_raises(contains="--remasking entropy does not apply to llada"):
+        check_arch_flags(entropy, "llada")
+    check_arch_flags(entropy, "dream")
+    var random = Args(
+        ["x", "run", "--prompt", "p", "--remasking", "random"],
+        spec.values,
+        spec.booleans,
+    )
+    with assert_raises(contains="--remasking random does not apply to dream"):
+        check_arch_flags(random, "dream")
+    check_arch_flags(random, "llada")
+
+
+def test_logits_option_values_are_checked_before_the_model_loads() raises:
+    var base = List[String](
+        ["--model", "m", "--tokens", "1", "--rows", "0", "--out", "o"]
+    )
+    for bad in List[String](["0", "-1"]):
+        var rest = base.copy()
+        rest.append("--prev-temp-inv")
+        rest.append(bad)
+        _same(
+            "logits", rest, "flag --prev-temp-inv must be above 0, got " + bad
+        )
+    for bad in List[String](["abc", "nan", "inf"]):
+        var rest = base.copy()
+        rest.append("--prev-temp-inv")
+        rest.append(bad)
+        _same(
+            "logits",
+            rest,
+            "flag --prev-temp-inv needs a finite number, got '" + bad + "'",
+        )
+    var path = base.copy()
+    path.append("--path")
+    path.append("warm")
+    _same("logits", path, "flag --path must be unified or cached, got 'warm'")
+    var device = base.copy()
+    device.append("--device")
+    device.append("tpu")
+    _same("logits", device, "flag --device must be cpu or gpu, got 'tpu'")
+
+
+def test_a_bad_option_exits_two_without_opening_the_model() raises:
+    # The model path does not exist: an exit of 1 would mean the open ran.
+    var head = List[String](
+        ["mojo-dllm", "run", "--model", "/nonexistent/model.gguf", "--prompt"]
+    )
+    for flag in List[String](["--device", "--remasking", "--threshold"]):
+        var argv = head.copy()
+        argv.append("hi")
+        argv.append(flag)
+        argv.append("nan" if flag == "--threshold" else "foo")
+        assert_equal(execute(argv), 2)
+
+
+def test_logits_checks_rows_and_prev_before_the_weights_load() raises:
+    # all-sliding.gguf is a thin file with no norm or attention tensors, so constructing the model fails
+    # with "tensor ... not found"; a check made first reports the flag instead.
+    var bad = "tests/fixtures/diffusion-gemma/all-sliding.gguf"
+    var path = String("build/tests/dg-order.f32")
+    with assert_raises(contains="--rows must be 9,10"):
+        _logits_gemma(bad, 1, _gemma_tokens(25), _rows(8), path)
+    var short = String("build/tests/dg-order-short.f32")
+    with open(short, "w") as f:
+        f.write("0123")
+    with assert_raises(contains="holds 4 bytes, expected 32768"):
+        _logits_gemma(
+            bad, 1, _gemma_tokens(25), _rows(9), path, "unified", short, 1.25
+        )
+    remove(short)
+    with assert_raises(contains="below the canvas length 16"):
+        _logits_gemma(bad, 1, _gemma_tokens(15), List[Int](), path)
 
 
 def test_the_gemma_only_flags_are_named_for_other_models() raises:
