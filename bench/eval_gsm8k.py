@@ -21,9 +21,10 @@ the output, and compares it with the gold answer.
 `compare` pairs two arms problem by problem and writes
 bench/eval/DATE-ARM_A-vs-ARM_B.json: both accuracies, the difference with a
 95% confidence interval, McNemar's exact test on the discordant problems, and
-the forward passes and seconds each arm spent. The interval's width depends
-on how many problems the arms disagree on: with 10 of 200 it is about +/- 3
-points, so a smaller change is "not detectable", not "zero". An arm keeps one
+the forward passes and seconds each arm spent. Passes average over the problems
+that have a count (an engine that cannot count them writes null), and
+`forward_passes_rows` says how many that is. The interval's width depends on how
+many problems the arms disagree on: with 10 of 200 it is about +/- 3 points, so a smaller change is "not detectable", not "zero". An arm keeps one
 configuration (flags, code version, model): resuming with another is refused,
 and so is comparing arms that ran different models.
 """
@@ -92,6 +93,31 @@ def paired_ci(b: int, c: int, n: int) -> tuple[float, float, float]:
     return d, d - 1.96 * se, d + 1.96 * se
 
 
+def answered(out: pathlib.Path, arm: str, flags: object, version: str, model: str) -> set[int]:
+    """The problem indexes already in an arm's file, refusing a file made with another configuration.
+
+    A resumed arm must keep one configuration, or a paired comparison would mix two of them without saying so.
+    """
+    done: set[int] = set()
+    if out.exists():
+        for l in out.read_text().splitlines():
+            r = json.loads(l)
+            if (r.get("flags"), r.get("version"), r.get("model")) != (flags, version, model):
+                raise SystemExit(
+                    f"arm {arm!r} was started with flags={r.get('flags')} version={r.get('version')} "
+                    f"model={r.get('model')}; this run has flags={flags} version={version} model={model}. "
+                    "Use a new arm name.")
+            done.add(r["index"])
+    return done
+
+
+def wait_if_paused() -> None:
+    if PAUSE.exists():
+        print(f"paused: waiting for {PAUSE.relative_to(ROOT)} to be removed", flush=True)
+        while PAUSE.exists():
+            time.sleep(10)
+
+
 def cmd_run(args: argparse.Namespace, extra: list[str]) -> int:
     problems = [json.loads(l) for l in DATA.read_text().splitlines()]
     if args.limit:
@@ -107,25 +133,11 @@ def cmd_run(args: argparse.Namespace, extra: list[str]) -> int:
                            capture_output=True, text=True).stdout.strip()
     version += "-dirty" if dirty else ""
     model = pathlib.Path(args.model).name
-    done = set()
-    if out.exists():
-        # A resumed arm must keep one configuration, or a paired comparison
-        # would mix two of them without saying so.
-        for l in out.read_text().splitlines():
-            r = json.loads(l)
-            if (r.get("flags"), r.get("version"), r.get("model")) != (flags, version, model):
-                raise SystemExit(
-                    f"arm {args.arm!r} was started with flags={r.get('flags')} version={r.get('version')} "
-                    f"model={r.get('model')}; this run has flags={flags} version={version} model={model}. "
-                    "Use a new arm name.")
-            done.add(r["index"])
+    done = answered(out, args.arm, flags, version, model)
     for k, p in enumerate(problems):
         if p["index"] in done:
             continue
-        if PAUSE.exists():
-            print(f"paused: waiting for {PAUSE.relative_to(ROOT)} to be removed", flush=True)
-            while PAUSE.exists():
-                time.sleep(10)
+        wait_if_paused()
         cmd = [str(ROOT / "build/mojo-dllm"), "run", "--model", args.model,
                "--prompt", PROMPT.format(question=p["question"])] + flags
         r, pinfo = power.run_on_mains(lambda: subprocess.run(cmd, capture_output=True, text=True),
@@ -171,6 +183,17 @@ def first_rows(rows: dict[int, dict], limit: int) -> dict[int, dict]:
     return dict(list(rows.items())[:limit]) if limit else rows
 
 
+def passes_of(rows: dict[int, dict], common: list[int]) -> list[int]:
+    """The forward-pass counts the arm recorded; an engine that cannot count them writes null."""
+    return [rows[i]["forward_passes"] for i in common if rows[i]["forward_passes"] is not None]
+
+
+def passes_mean(rows: dict[int, dict], common: list[int]) -> float | None:
+    """Mean passes over the problems that have a count, or None when none has."""
+    got = passes_of(rows, common)
+    return sum(got) / len(got) if got else None
+
+
 def cmd_compare(a_name: str, b_name: str, limit: int = 0) -> int:
     A, B = first_rows(load_arm(a_name), limit), first_rows(load_arm(b_name), limit)
     ca, cb = arm_config(a_name, A), arm_config(b_name, B)
@@ -189,8 +212,8 @@ def cmd_compare(a_name: str, b_name: str, limit: int = 0) -> int:
         config={a_name: ca, b_name: cb},
         accuracy={a_name: sum(A[i]["correct"] for i in common) / n, b_name: sum(B[i]["correct"] for i in common) / n},
         difference=d, ci95=[lo, hi], discordant={"a_only": b, "b_only": c}, mcnemar_p=mcnemar_exact(b, c),
-        forward_passes_mean={a_name: sum(A[i]["forward_passes"] for i in common) / n,
-                             b_name: sum(B[i]["forward_passes"] for i in common) / n},
+        forward_passes_mean={a_name: passes_mean(A, common), b_name: passes_mean(B, common)},
+        forward_passes_rows={a_name: len(passes_of(A, common)), b_name: len(passes_of(B, common))},
         generate_s_mean={a_name: sum(A[i]["generate_s"] for i in common) / n,
                          b_name: sum(B[i]["generate_s"] for i in common) / n},
     )
@@ -198,7 +221,8 @@ def cmd_compare(a_name: str, b_name: str, limit: int = 0) -> int:
     out = ROOT / "bench" / "eval" / f"{dt.date.today().isoformat()}-{a_name}-vs-{b_name}{suffix}.json"
     out.write_text(json.dumps(doc, indent=2) + "\n")
     print(json.dumps({k: doc[k] for k in ("problems", "accuracy", "difference", "ci95", "discordant",
-                                           "mcnemar_p", "forward_passes_mean", "generate_s_mean")}, indent=1))
+                                           "mcnemar_p", "forward_passes_mean", "forward_passes_rows",
+                                           "generate_s_mean")}, indent=1))
     print(f"wrote {out.relative_to(ROOT)}")
     return 0
 

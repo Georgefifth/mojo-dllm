@@ -151,6 +151,35 @@ def run_mojo(c: dict, prompt: str, threads: int, extra: list[str]) -> dict:
     )
 
 
+def cuda_layer_error(output: str) -> str | None:
+    """Why a CUDA llama.cpp run does not count as one, or None when every layer was on the GPU.
+
+    A CUDA build that fails to find the GPU falls back to the CPU and still prints a timing; that is
+    refused rather than labelled CUDA. With -v, llama.cpp names the device of every layer it loads.
+    """
+    devices = re.findall(r"layer\s+\d+ assigned to device (\w+)", output)
+    if not devices or any(not d.startswith("CUDA") for d in devices):
+        return f"CUDA run did not put every layer on the GPU: {sorted(set(devices))}"
+    return None
+
+
+def parse_llama_output(output: str) -> dict | None:
+    """llama-diffusion-cli's timing line and the text after it, or None when there is no timing line.
+
+    diffusion-cli prints the timing line from inside the generator, then logs the text; its trailing
+    llama_perf/teardown lines are dropped, and so are the timestamped log lines that -v (CUDA runs) adds,
+    such as "0.01.487.312 D load_tensors: ...".
+    """
+    m = re.search(r"total time: ([0-9.]+)ms, time per step: ([0-9.]+)ms", output)
+    if not m:
+        return None
+    text = "\n".join(
+        l for l in output[m.end():].splitlines()
+        if not l.startswith(("llama_", "common_", "main:")) and not re.match(r"\d+\.\d+\.\d+\.\d+ [DIWE] ", l)
+    ).strip()
+    return dict(total_s=float(m.group(1)) / 1000.0, ms_per_step=float(m.group(2)), text=text)
+
+
 def run_llama(c: dict, prompt: str, threads: int, seq_len: int, cuda: bool = False) -> dict:
     """llama.cpp's diffusion example; with cuda, the build-cuda tree and every layer offloaded."""
     build = "build-cuda" if cuda else "build"
@@ -162,29 +191,17 @@ def run_llama(c: dict, prompt: str, threads: int, seq_len: int, cuda: bool = Fal
     ] + (["-ngl", "99", "-v"] if cuda else [])
     rc, out, err, wall, rss = timed(cmd)
     if cuda:
-        # A CUDA build that fails to find the GPU falls back to the CPU and
-        # still prints a timing; refuse that rather than label it CUDA. With
-        # -v, llama.cpp names the device of every layer it loads.
-        devices = re.findall(r"layer\s+\d+ assigned to device (\w+)", err + out)
-        if not devices or any(not d.startswith("CUDA") for d in devices):
-            return dict(ok=False, rc=rc, error=f"CUDA run did not put every layer on the GPU: {sorted(set(devices))}")
-    m = re.search(r"total time: ([0-9.]+)ms, time per step: ([0-9.]+)ms", err + out)
-    if rc != 0 or not m:
+        bad = cuda_layer_error(err + out)
+        if bad:
+            return dict(ok=False, rc=rc, error=bad)
+    parsed = parse_llama_output(err + out)
+    if rc != 0 or not parsed:
         return dict(ok=False, rc=rc, error=(err or out)[-400:])
-    total = float(m.group(1)) / 1000.0
-    # diffusion-cli prints the timing line from inside the generator, then logs
-    # the text; drop its trailing llama_perf/teardown lines.
-    tail = (err + out)[m.end():]
-    # With -v (CUDA runs) llama.cpp also prints timestamped log lines such as
-    # "0.01.487.312 D load_tensors: ..."; drop those too.
-    text = "\n".join(
-        l for l in tail.splitlines()
-        if not l.startswith(("llama_", "common_", "main:")) and not re.match(r"\d+\.\d+\.\d+\.\d+ [DIWE] ", l)
-    ).strip()
+    total = parsed["total_s"]
     return dict(
         ok=True, wall_s=wall, peak_rss_bytes=rss, generate_s=total,
-        ms_per_step=float(m.group(2)), forward_passes=c["steps"], startup_s=wall - total,
-        seq_len=seq_len, text=text[-600:],
+        ms_per_step=parsed["ms_per_step"], forward_passes=c["steps"], startup_s=wall - total,
+        seq_len=seq_len, text=parsed["text"][-600:],
     )
 
 
