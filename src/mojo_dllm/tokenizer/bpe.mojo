@@ -29,6 +29,7 @@ The regex (llama.cpp `LLAMA_VOCAB_PRE_TYPE_BAILINGMOE`, ECMAScript semantics):
 from std.collections import Dict
 
 from mojo_dllm.formats.gguf import GGUFFile
+from mojo_dllm.formats.utf8 import utf8_decode_bytes
 from mojo_dllm.tokenizer.gemma4 import Gemma4Vocab
 from mojo_dllm.tokenizer.unicode_tables import (
     LETTER_RANGES,
@@ -110,38 +111,10 @@ def _lower(cp: Int) -> Int:
 
 
 def utf8_decode(s: String) -> List[Int]:
-    """Code points of `s`. Invalid bytes become U+FFFD."""
-    var out = List[Int]()
-    var b = s.as_bytes()
-    var i = 0
-    var n = len(b)
-    while i < n:
-        var c = Int(b[i])
-        if c < 0x80:
-            out.append(c)
-            i += 1
-        elif c >= 0xC0 and c < 0xE0 and i + 1 < n:
-            out.append(((c & 0x1F) << 6) | (Int(b[i + 1]) & 0x3F))
-            i += 2
-        elif c >= 0xE0 and c < 0xF0 and i + 2 < n:
-            out.append(
-                ((c & 0x0F) << 12)
-                | ((Int(b[i + 1]) & 0x3F) << 6)
-                | (Int(b[i + 2]) & 0x3F)
-            )
-            i += 3
-        elif c >= 0xF0 and i + 3 < n:
-            out.append(
-                ((c & 0x07) << 18)
-                | ((Int(b[i + 1]) & 0x3F) << 12)
-                | ((Int(b[i + 2]) & 0x3F) << 6)
-                | (Int(b[i + 3]) & 0x3F)
-            )
-            i += 4
-        else:
-            out.append(0xFFFD)
-            i += 1
-    return out^
+    """Code points of `s`. A byte that does not begin a valid UTF-8 sequence
+    becomes U+FFFD and decoding goes on at the next byte, as in llama.cpp (see
+    `formats/utf8.mojo`). A `String` made from raw bytes can hold such bytes."""
+    return utf8_decode_bytes(s.as_bytes())
 
 
 def utf8_append(mut out: List[UInt8], cp: Int):

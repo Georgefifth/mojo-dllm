@@ -225,6 +225,17 @@ semantic versioning (0.y: minor bumps may break things).
   takes false for LLaDA and true for Dream. `inspect` of a LLaDA or Dream file
   also prints `config: refused:` with the reason when its metadata is invalid
   (#204).
+- `utf8_decode`, which the byte-level tokenizer applies to every prompt fragment
+  and to every token text, requires the continuation bytes of a sequence and
+  refuses overlong forms, surrogates and values above U+10FFFF. A byte that
+  does not begin a valid sequence becomes U+FFFD and decoding goes on at the
+  next byte, as in llama.cpp's `unicode_cpts_from_utf8`. It used to take the
+  next one to three bytes whatever they were: the Latin-1 text `caf\xe9 au
+  lait` decoded `E9 20 61` to U+9821 and lost the space and the `a`. The check
+  lives in the new `formats/utf8.mojo`. The command line cannot hand such a text
+  to `run` or `tokenize`, because the Mojo runtime refuses an argument that is
+  not UTF-8 with exit status 125 before the program starts; `docs/cli.md` lists
+  that message (#197).
 - Model configuration rejects incompatible RoPE widths/scaling and attention
   key lengths, and unsupported-architecture errors list LLaDA and Dream.
 - Matrix load errors name the tensor and distinguish an unsupported type from

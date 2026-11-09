@@ -151,6 +151,7 @@ change nothing; every other error exits with status 1.
 | `ERROR: cannot open model file PATH: No such file or directory` | The path is wrong. The reason is the operating system's. The next line is `to download a model, run: ./mojo-dllm pull` |
 | `ERROR: cannot open model file PATH: Permission denied` | The open failed for a reason other than a missing file, such as `Not a directory`. The operating system names the reason. No download hint follows, because `pull` would not fix it |
 | `ERROR: is a directory: PATH` | The model path names a directory |
+| `error: invalid UTF-8 was detected in one or more arguments` | The Mojo runtime prints this and exits with status 125 before the command starts, when a flag value such as `--prompt` is not UTF-8 (a Latin-1 text, for example). Save the text as UTF-8. The command never sees the value |
 | `ERROR: PATH is not a GGUF file (bad magic).` | A failed download leaves an HTML error page with a `.gguf` name. Delete the file and run `./mojo-dllm pull` again |
 
 The remaining errors exit with status 1 and come from the model file itself:

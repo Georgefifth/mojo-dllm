@@ -963,6 +963,7 @@ def main() -> None:
     unsupported_embedding()
     metadata_cases()
     llada_shape_cases()
+    utf8_cases()
     entropy_rows()
     diffusion_gemma()
     gemma4_tiny()
@@ -1113,6 +1114,119 @@ def gpt2_tiny() -> None:
     w.write_kv_data_to_file()
     w.write_tensors_to_file()
     w.close()
+
+
+UTF8_CASES = [
+    # (name, bytes). Valid input first, then one case or more for each way a sequence can be wrong.
+    ("empty", b""),
+    ("ascii", b"abc 123"),
+    ("two-byte", "caf\u00e9".encode()),
+    ("three-byte", "\u20ac".encode()),
+    ("four-byte", "\U0001f600".encode()),
+    ("lowest-two-byte", bytes([0xC2, 0x80])),
+    ("highest-two-byte", bytes([0xDF, 0xBF])),
+    ("lowest-three-byte", bytes([0xE0, 0xA0, 0x80])),
+    ("before-surrogates", bytes([0xED, 0x9F, 0xBF])),
+    ("after-surrogates", bytes([0xEE, 0x80, 0x80])),
+    ("highest-three-byte", bytes([0xEF, 0xBF, 0xBF])),
+    ("lowest-four-byte", bytes([0xF0, 0x90, 0x80, 0x80])),
+    ("highest-code-point", bytes([0xF4, 0x8F, 0xBF, 0xBF])),
+    ("latin1-e9", bytes([0x63, 0x61, 0x66, 0xE9, 0x20, 0x61])),  # "caf\xe9 a": the case of issue #197
+    ("latin1-e9-last", b"caf\xe9"),
+    ("stray-continuation-first", bytes([0x80])),
+    ("stray-continuation-middle", bytes([0x61, 0xBF, 0x62])),
+    ("overlong-c0", bytes([0xC0, 0x80])),
+    ("overlong-c1", bytes([0xC1, 0xBF])),
+    ("overlong-three-byte", bytes([0xE0, 0x80, 0x80])),
+    ("overlong-three-byte-high", bytes([0xE0, 0x9F, 0xBF])),
+    ("overlong-four-byte", bytes([0xF0, 0x80, 0x80, 0x80])),
+    ("overlong-four-byte-high", bytes([0xF0, 0x8F, 0xBF, 0xBF])),
+    ("surrogate-low", bytes([0xED, 0xA0, 0x80])),
+    ("surrogate-high", bytes([0xED, 0xBF, 0xBF])),
+    ("above-10ffff", bytes([0xF4, 0x90, 0x80, 0x80])),
+    ("lead-f5", bytes([0xF5, 0x80, 0x80, 0x80])),
+    ("lead-ff", bytes([0xFF])),
+    ("lead-fe-then-ascii", bytes([0xFE, 0x41])),
+    ("two-byte-lead-then-ascii", bytes([0xC3, 0x28])),
+    ("three-byte-then-ascii-second", bytes([0xE2, 0x28, 0xA1])),
+    ("three-byte-then-ascii-third", bytes([0xE2, 0x82, 0x28])),
+    ("four-byte-then-ascii-fourth", bytes([0xF0, 0x9F, 0x98, 0x28])),
+    ("lead-then-lead", bytes([0xC3, 0xC3, 0xA9])),
+    ("truncated-two-byte", bytes([0x61, 0xC3])),
+    ("truncated-three-byte", bytes([0xE2, 0x82])),
+    ("truncated-four-byte", bytes([0xF0, 0x9F, 0x98])),
+    ("truncated-three-byte-first-only", bytes([0xE2])),
+    ("two-invalid-in-a-row", bytes([0xE9, 0xE9, 0x61])),
+]
+
+
+def lead_byte_decode(data: bytes) -> list[int]:
+    """What `utf8_decode` must return: llama.cpp's `unicode_cpts_from_utf8` (src/unicode.cpp lines 30 to 75 and 1389
+    to 1404 at 5f490d7), which turns the lead byte of an invalid sequence into U+FFFD and goes on at the next byte,
+    except that a surrogate is also invalid here (llama.cpp's check stops at overlong forms and values above
+    U+10FFFF)."""
+    out: list[int] = []
+    i = 0
+    while i < len(data):
+        c = data[i]
+        need = 0
+        if c < 0x80:
+            out.append(c)
+            i += 1
+            continue
+        if 0xC2 <= c <= 0xDF:
+            need = 1
+        elif 0xE0 <= c <= 0xEF:
+            need = 2
+        elif 0xF0 <= c <= 0xF4:
+            need = 3
+        tail = data[i + 1:i + 1 + need]
+        ok = need > 0 and len(tail) == need and all(0x80 <= t <= 0xBF for t in tail)
+        cp = 0
+        if ok:
+            cp = (c & (0x3F >> need)) if need else c
+            for t in tail:
+                cp = (cp << 6) | (t & 0x3F)
+            ok = cp >= (0x80, 0x800, 0x10000)[need - 1] and cp <= 0x10FFFF and not 0xD800 <= cp <= 0xDFFF
+        if ok:
+            out.append(cp)
+            i += 1 + need
+        else:
+            out.append(0xFFFD)
+            i += 1
+    return out
+
+
+def utf8_cases() -> None:
+    """tests/fixtures/utf8-cases.tsv: byte strings, the code points `utf8_decode` must return, and the offset of
+    the first byte that begins an invalid sequence (-1 when the input is valid).
+
+    Python's own decoder is the check on this table. The first invalid offset is `UnicodeDecodeError.start`. The
+    code points agree with `bytes.decode(errors="replace")` in every case but one kind: a sequence that stops short
+    after a valid prefix (a lead byte and some good continuation bytes), where Python writes one U+FFFD for the
+    whole stretch and the lead-byte rule writes one for each byte."""
+    lines = []
+    differs = []
+    for name, data in UTF8_CASES:
+        expected = lead_byte_decode(data)
+        try:
+            data.decode("utf-8")
+            first = -1
+            assert expected == [ord(ch) for ch in data.decode("utf-8")], name
+        except UnicodeDecodeError as err:
+            first = err.start
+            assert expected[first] == 0xFFFD, name
+        python = [ord(ch) for ch in data.decode("utf-8", errors="replace")]
+        if python != expected:
+            differs.append(name)
+        lines.append("\t".join((name, data.hex() or "-", " ".join(f"{cp:x}" for cp in expected) or "-", str(first))))
+    # The four cases where Python and the lead-byte rule part are the sequences that stop short after a valid
+    # prefix (a lead byte and one or more good continuation bytes): Python writes one U+FFFD for the stretch,
+    # the lead-byte rule one for each byte. No other case parts, so a change in either decoder shows here.
+    assert sorted(differs) == [
+        "four-byte-then-ascii-fourth", "three-byte-then-ascii-third", "truncated-four-byte", "truncated-three-byte",
+    ], differs
+    (OUT / "utf8-cases.tsv").write_text("\n".join(lines) + "\n")
 
 
 def entropy_rows() -> None:
