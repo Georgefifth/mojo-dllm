@@ -16,7 +16,7 @@
 from std.ffi import ErrNo, external_call, c_int, get_errno
 from std.math import isfinite
 from std.os import getenv, remove
-from std.os.path import getsize
+from std.os.path import exists, getsize, isdir, isfile
 from std.sys import argv, exit, num_logical_cores, stderr
 from std.time import perf_counter_ns
 
@@ -1243,8 +1243,26 @@ def write_f32_file(path: String, data: F32Ptr, n_floats: Int) raises:
 
     The bytes go to `<path>.tmp`, are checked there, and only then renamed to
     `path`; any error removes the temporary file first. A consumer such as
-    bench/parity.py then never sees a short file under the final name.
+    bench/parity.py then never sees a short file under the final name. The
+    rename replaces a symlink at `path` (the link goes, its target stays) and a
+    read-only file; a path that exists and is not a regular file (a device, a
+    pipe; not a directory) is written directly instead.
     """
+    if exists(path) and not isfile(path) and not isdir(path):
+        # A device, a pipe or a terminal (`/dev/null`, `/dev/stdout`): there is
+        # no name to rename a temporary file to and no size to check, so the
+        # bytes go straight to it.
+        try:
+            var f = open(path, "w")
+            f.write_all(
+                Span(
+                    unsafe_ptr=data.unsafe_bitcast[UInt8](), length=n_floats * 4
+                )
+            )
+            f.close()
+        except e:
+            raise Error("cannot write " + path + ": " + String(e))
+        return
     var tmp = path + ".tmp"
     try:
         write_bytes_checked(tmp, data.unsafe_bitcast[UInt8](), n_floats * 4)

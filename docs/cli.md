@@ -141,6 +141,10 @@ only then renamed to `FILE`; any failure (a full disk, a quota, a missing or unw
 removes the temporary file, prints `ERROR: cannot write FILE: ...` with the system's reason, exits with
 status 1 and leaves any earlier `FILE` as it was. `wrote N rows` appears only after the rename.
 
+The rename replaces a symlink named `FILE` (the link goes and its target stays as it was) and a read-only
+`FILE`. When `FILE` already exists and is not a regular file (`/dev/null`, `/dev/stdout`, a pipe), the bytes
+are written to it directly: there is no name to rename to and no size to check.
+
 On a `diffusion-gemma` file the tokens are the prompt followed by the canvas,
 whose length the file declares (`diffusion.canvas_length`, 256 in the real
 model). The model scores only the canvas, so `--rows` must list exactly those

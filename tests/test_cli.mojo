@@ -1782,6 +1782,40 @@ def test_f32_file_is_written_whole_under_its_final_name_only() raises:
     remove(path)
 
 
+def test_f32_file_is_written_straight_to_a_special_file() raises:
+    # /dev/null is not a regular file: a temporary name beside it cannot be
+    # made, and a size check of the target would read 0. The bytes go to it
+    # directly and the call succeeds.
+    var data = _floats(8)
+    write_f32_file("/dev/null", data.ptr(), 8)
+    assert_true(exists("/dev/null"))
+    assert_true(not exists("/dev/null.tmp"))
+
+
+def test_f32_file_replaces_a_symlink_and_a_read_only_regular_file() raises:
+    # Regular files (and a symlink to one) keep the temporary name and the
+    # rename: the link or the read-only file is replaced, not written through.
+    var real = String("build/tests/f32-link-real.f32")
+    var link = String("build/tests/f32-link.f32")
+    if exists(link):
+        remove(link)
+    with open(real, "w") as f:
+        f.write("old")
+    var data = _floats(4)
+    var target = real
+    var name = link
+    var rc = external_call["symlink", c_int](
+        target.as_c_string_span(), name.as_c_string_span()
+    )
+    assert_equal(Int(rc), 0)
+    write_f32_file(link, data.ptr(), 4)
+    assert_equal(len(_read_all(link)), 4)
+    with open(real, "r") as f:
+        assert_equal(f.read(), "old")
+    remove(link)
+    remove(real)
+
+
 def test_f32_file_in_a_directory_that_cannot_exist_leaves_nothing() raises:
     # Mojo's open() makes missing parent directories, and /proc takes none.
     var path = String("/proc/mojo-dllm-no-such-dir/out.f32")
