@@ -11,6 +11,7 @@ from mojo_dllm.diffusion.sampler import (
     _confidence,
     _confidence_from_stats,
     _greedy_rows,
+    _gumbel_argmax,
     StepObserver,
     generate_observed,
 )
@@ -622,6 +623,85 @@ def test_confidence_from_row_statistics_matches_the_full_row() raises:
             abs(got - w[1]) < 1e-9,
             algo + ": " + String(got) + " against " + String(w[1]),
         )
+
+
+def test_rng_matches_the_xoshiro256_starstar_reference() raises:
+    # Known answers from an independent Python implementation of splitmix64
+    # (the seed expansion) and xoshiro256** (Blackman and Vigna's definition).
+    var a = Rng(0)
+    assert_equal(a.s0, UInt64(0xE220A8397B1DCDAF))
+    assert_equal(a.s1, UInt64(0x6E789E6AA1B965F4))
+    assert_equal(a.s2, UInt64(0x06C45D188009454F))
+    assert_equal(a.s3, UInt64(0xF88BB8A8724C81EC))
+    assert_equal(a.next_u64(), UInt64(0x99EC5F36CB75F2B4))
+    assert_equal(a.next_u64(), UInt64(0xBF6E1F784956452A))
+    assert_equal(a.next_u64(), UInt64(0x1A5F849D4933E6E0))
+    var b = Rng(42)
+    assert_equal(b.s0, UInt64(0xBDD732262FEB6E95))
+    assert_equal(b.s1, UInt64(0x28EFE333B266F103))
+    assert_equal(b.s2, UInt64(0x47526757130F9F52))
+    assert_equal(b.s3, UInt64(0x581CE1FF0E4AE394))
+    assert_equal(b.next_u64(), UInt64(0x15780B2E0C2EC716))
+    assert_equal(b.next_u64(), UInt64(0x6104D9866D113A7E))
+    assert_equal(b.next_u64(), UInt64(0xAE17533239E499A1))
+    assert_equal(b.next_u64(), UInt64(0xECB8AD4703B360A1))
+
+
+def test_rng_uniform_and_below_scale_the_53_high_bits() raises:
+    var r = Rng(0)
+    assert_equal(r.uniform(), 0.6012629994179048)
+    assert_equal(r.uniform(), 0.7477740925472398)
+    assert_equal(r.uniform(), 0.10301998939503637)
+    var s = Rng(0)
+    var want: List[Int] = [4, 5, 0, 2, 5, 6]
+    for w in want:
+        assert_equal(s.below(7), w)
+    var t = Rng(0)
+    var want_k: List[Int] = [601, 747, 103, 416, 732, 999]
+    for w in want_k:
+        assert_equal(t.below(1000), w)
+
+
+def _gumbel_frequency(
+    logits: Floats, temperature: Float64, draws: Int, seed: Int, index: Int
+) -> Float64:
+    var rng = Rng(seed)
+    var hits = 0
+    for _ in range(draws):
+        if _gumbel_argmax(logits.ptr(), logits.n, temperature, rng) == index:
+            hits += 1
+    return Float64(hits) / Float64(draws)
+
+
+def test_gumbel_draw_follows_softmax_of_logits_over_temperature() raises:
+    # With logits [0, T ln 3] the draw picks index 1 with probability
+    # exp(ln 3) / (1 + exp(ln 3)) = 3/4, whatever T is. A noise scale other
+    # than T moves the frequency out of the band (no scale: 0.683).
+    var t = Float64(0.7)
+    var logits = Floats(2)
+    logits[0] = 0.0
+    logits[1] = Float32(t * log(3.0))
+    var f = _gumbel_frequency(logits, t, 20000, 1, 1)
+    assert_true(f >= 0.74 and f <= 0.76, "frequency " + String(f))
+    # Same logits at T = 2: 3^(0.35) / (1 + 3^(0.35)) = 0.595.
+    var f2 = _gumbel_frequency(logits, 2.0, 20000, 1, 1)
+    assert_true(
+        f2 >= 0.575 and f2 <= 0.615, "frequency at T = 2: " + String(f2)
+    )
+    # The draw is a function of the seed only.
+    assert_equal(f, _gumbel_frequency(logits, t, 20000, 1, 1))
+
+
+def test_gumbel_draw_at_a_vanishing_temperature_is_the_argmax() raises:
+    var logits = Floats(5)
+    logits[0] = 0.3
+    logits[1] = -1.0
+    logits[2] = 2.5
+    logits[3] = 2.4
+    logits[4] = 0.0
+    var rng = Rng(7)
+    for _ in range(200):
+        assert_equal(_gumbel_argmax(logits.ptr(), 5, 1e-6, rng), 2)
 
 
 def main() raises:
