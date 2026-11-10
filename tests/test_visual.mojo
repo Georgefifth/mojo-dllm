@@ -259,10 +259,9 @@ def test_run_finishes_when_early_stop_skips_interval() raises:
     cfg.gen_length = 8
     cfg.block_length = 8
     cfg.steps = 8
-    cfg.mask_id = 511
     cfg.early_stop = False
     cfg.threshold = 1e-30
-    var first = _FirstStep(cfg.mask_id)
+    var first = _FirstStep(511)
     _ = generate_observed(model, prompt, cfg, first)
     assert_equal(first.first_resolved_step, 1)
     tok.eot_id = first.tokens[3]
@@ -283,10 +282,9 @@ def test_run_finishes_when_early_stop_skips_interval() raises:
     run_cfg.gen_length = 8
     run_cfg.block_length = 8
     run_cfg.steps = 8
-    run_cfg.mask_id = 511
     run_cfg.threshold = 1e-30
     var output = _OutputCapture()
-    _run(model, args, run_cfg^, prompt, tok^, 0.0, "cpu", "cpu", 1)
+    _run(model, args, run_cfg^, prompt, tok^, 0.0, "cpu", "cpu")
     var text = output.finish()
     var frame_at = text.find("denoising step 1 / 8")
     var json_at = text.find('{"runtime": "mojo-dllm"')
@@ -322,7 +320,6 @@ def _tiny_gen_config(threshold: Float64 = 0.0) -> GenConfig:
     cfg.gen_length = 8
     cfg.block_length = 8
     cfg.steps = 8
-    cfg.mask_id = 511
     cfg.threshold = threshold
     return cfg^
 
@@ -348,7 +345,7 @@ def _run_json(
     )
     var output = _OutputCapture()
     try:
-        _run(model, args, cfg^, prompt, tok^, 0.0, "cpu", "cpu", 1)
+        _run(model, args, cfg^, prompt, tok^, 0.0, "cpu", "cpu")
     except e:
         _ = output.finish()
         raise Error("_run failed: " + String(e))
@@ -384,6 +381,18 @@ def test_run_json_prints_one_line_and_nothing_else_on_stdout() raises:
         elif c == 125:
             depth -= 1
     assert_equal(depth, 0)
+
+
+def test_run_json_reports_the_threads_of_the_run_config() raises:
+    # One thread count: `_run` reads it from the config it was given, and
+    # there is no second parameter that could disagree.
+    var tok = _tokenizer()
+    var model = DiffusionLM(FIX + "tiny-llada.gguf", threads=1, max_tokens=16)
+    var prompt: List[Int] = [5, 17, 300]
+    var cfg = _tiny_gen_config()
+    cfg.threads = 3
+    var text = _run_json(model, prompt, tok^, cfg^, True)
+    assert_true(text.find('"threads": 3, "prompt_tokens": 3') > 0)
 
 
 def test_run_text_ends_at_the_first_end_of_generation_token() raises:
@@ -433,7 +442,7 @@ def test_run_stops_early_on_the_end_of_generation_id_of_either_kind() raises:
     var prompt: List[Int] = [5, 17, 300]
     var probe = _tiny_gen_config(1e-30)
     probe.early_stop = False
-    var first = _FirstStep(probe.mask_id)
+    var first = _FirstStep(511)
     _ = generate_observed(model, prompt, probe, first)
     assert_equal(first.first_resolved_step, 1)
     var stop = first.tokens[3]

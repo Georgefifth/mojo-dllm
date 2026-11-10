@@ -46,7 +46,6 @@ struct GenConfig(Copyable, Movable):
     var temperature: Float64
     var remasking: String
     var seed: Int
-    var mask_id: Int
     var full_logits: Bool
     var eps: Float64
     """Dream's final timestep: timesteps run linspace(1, eps, steps + 1)."""
@@ -87,7 +86,6 @@ struct GenConfig(Copyable, Movable):
         self.temperature = 0.0
         self.remasking = "low_confidence"
         self.seed = 42
-        self.mask_id = 126336
         self.full_logits = False
         self.eps = 1e-3
         self.threads = 1
@@ -139,8 +137,6 @@ struct GenResult(Movable):
     var forward_passes: Int
     var seconds: Float64
     var stopped_early: Bool
-    var steps_taken: Int
-    """Denoising steps run: one forward pass each."""
     var stop_reason: String
     """Why the loop ended: "complete" (the schedule ran out), "answer_fixed"
     (LLaDA and Dream early stop), "converged" (DiffusionGemma's argmax held
@@ -153,8 +149,11 @@ struct GenResult(Movable):
         self.forward_passes = 0
         self.seconds = 0.0
         self.stopped_early = False
-        self.steps_taken = 0
         self.stop_reason = "complete"
+
+    def steps_taken(self) -> Int:
+        """Denoising steps run: one forward pass each."""
+        return self.forward_passes
 
 
 struct Rng(Movable):
@@ -443,11 +442,12 @@ def _generate_llada[
     var P = len(prompt)
     var L = P + cfg.gen_length
     var vocab = model.config().vocab
+    var mask_id = model.config().mask_id
     var res = GenResult()
     for t in prompt:
         res.tokens.append(t)
     for _ in range(cfg.gen_length):
-        res.tokens.append(cfg.mask_id)
+        res.tokens.append(mask_id)
     var rng = Rng(cfg.seed)
     # Greedy decoding scores each row from four numbers the device reduces, so
     # the logits never leave it. Gumbel noise needs the rows on the host, and
@@ -469,14 +469,14 @@ def _generate_llada[
         var b1 = b0 + cfg.block_length
         var m = 0
         for i in range(b0, b1):
-            if res.tokens[i] == cfg.mask_id:
+            if res.tokens[i] == mask_id:
                 m += 1
         var schedule = num_transfer_tokens(m, steps_per_block)
         for s in range(steps_per_block):
             var t_step = perf_counter_ns()
             var cand = List[Int]()
             for i in range(b0, b1):
-                if res.tokens[i] == cfg.mask_id:
+                if res.tokens[i] == mask_id:
                     cand.append(i)
             if len(cand) == 0:
                 break
@@ -559,14 +559,13 @@ def _generate_llada[
             res.step_ms.append(Float64(perf_counter_ns() - t_step) / 1e6)
             obs.on_step(res.tokens, committed, res.forward_passes, cfg.steps)
             if cfg.early_stop and answer_is_fixed(
-                res.tokens, P, cfg.mask_id, cfg.stop_ids
+                res.tokens, P, mask_id, cfg.stop_ids
             ):
                 res.stopped_early = True
                 break
         if res.stopped_early:
             break
     res.seconds = Float64(perf_counter_ns() - t_start) / 1e9
-    res.steps_taken = res.forward_passes
     if res.stopped_early:
         res.stop_reason = "answer_fixed"
     return res^
@@ -680,11 +679,12 @@ def _generate_dream[
             "Dream needs at least one prompt token (logits are shifted)"
         )
     var vocab = model.config().vocab
+    var mask_id = model.config().mask_id
     var res = GenResult()
     for t in prompt:
         res.tokens.append(t)
     for _ in range(cfg.gen_length):
-        res.tokens.append(cfg.mask_id)
+        res.tokens.append(mask_id)
     var use_stats = model.device_row_stats()
     var logits = Floats(1 if use_stats else cfg.gen_length * vocab)
     var stats = RowStats()
@@ -693,7 +693,7 @@ def _generate_dream[
         var t_step = perf_counter_ns()
         var cand = List[Int]()
         for p in range(P, P + cfg.gen_length):
-            if res.tokens[p] == cfg.mask_id:
+            if res.tokens[p] == mask_id:
                 cand.append(p)
         if len(cand) == 0:
             break
@@ -738,12 +738,11 @@ def _generate_dream[
         res.step_ms.append(Float64(perf_counter_ns() - t_step) / 1e6)
         obs.on_step(res.tokens, committed, res.forward_passes, cfg.steps)
         if cfg.early_stop and answer_is_fixed(
-            res.tokens, P, cfg.mask_id, cfg.stop_ids
+            res.tokens, P, mask_id, cfg.stop_ids
         ):
             res.stopped_early = True
             break
     res.seconds = Float64(perf_counter_ns() - t_start) / 1e9
-    res.steps_taken = res.forward_passes
     if res.stopped_early:
         res.stop_reason = "answer_fixed"
     return res^
@@ -1095,7 +1094,6 @@ def _generate_diffusion_gemma[
             finished = True
             break
     res.seconds = Float64(perf_counter_ns() - t_start) / 1e9
-    res.steps_taken = res.forward_passes
     res.stop_reason = "converged" if finished else "max_steps"
-    res.stopped_early = finished and res.steps_taken < S
+    res.stopped_early = finished and res.steps_taken() < S
     return res^

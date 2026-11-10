@@ -174,6 +174,11 @@ semantic versioning (0.y: minor bumps may break things).
 
 ### Changed
 
+- The sampler reads the mask id from the model's config, and the run keeps one thread count and one step count
+  (issue #219). `GenConfig.mask_id` and its default of 126336, which every architecture inherited until the CLI
+  overwrote it, are gone: `generate` and the Dream and LLaDA loops use `model.config().mask_id`. `GenResult.steps_taken`
+  is a method that returns `forward_passes`, which it always equalled, and `_run` takes its thread count from the
+  config it receives instead of a second parameter. The `--json` output is unchanged.
 - `run --json` keeps stdout clean (issues #223 and #110): `--json` together with `--visual`, `--verbose` or
   `--dump-step-stats` is a usage error (`--json cannot be combined with --visual`, exit status 2, before the model
   loads), because each of them prints to stdout before the JSON object. Every `ERROR:` line, usage error or not, now

@@ -641,7 +641,7 @@ def stop_json(res: GenResult) -> String:
     """The JSON members that say how many steps ran and why the run ended."""
     return (
         ', "steps_taken": '
-        + String(res.steps_taken)
+        + String(res.steps_taken())
         + ', "stop_reason": "'
         + res.stop_reason
         + '"'
@@ -754,7 +754,6 @@ def cmd_run(a: Args) raises:
             tok_s,
             device,
             "gpu (" + gm.ctx.name() + ")",
-            threads,
         )
     elif device == "cpu":
         var cm = DiffusionLM(
@@ -772,7 +771,6 @@ def cmd_run(a: Args) raises:
             tok_s,
             device,
             "cpu   threads: " + String(threads),
-            threads,
         )
     else:
         raise Error("unknown device: " + device + " (expected cpu or gpu)")
@@ -789,10 +787,8 @@ def _run[
     tok_s: Float64,
     device: String,
     device_line: String,
-    threads: Int,
 ) raises:
     var verbose = a.has("verbose")
-    cfg.mask_id = model.config().mask_id
     if verbose:
         print(
             "model:",
@@ -880,7 +876,7 @@ def _run[
             + device
             + '"'
             + ', "threads": '
-            + String(threads)
+            + String(cfg.threads)
             + ', "prompt_tokens": '
             + String(len(prompt))
             + ', "gen_length": '

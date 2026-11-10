@@ -90,19 +90,15 @@ def _tiny_cfg() -> GenConfig:
     c.gen_length = 8
     c.block_length = 4
     c.steps = 4
-    c.mask_id = 511
     return c^
 
 
 def _tiny_dream_cfg() -> GenConfig:
-    # Same shape as `_tiny_cfg` but with Dream's mask id. The refusals this
-    # file pins all raise before `mask_id` is read, so its value only has to
-    # be Dream's for the config to be honest.
+    # Same shape as `_tiny_cfg`; the mask id comes from the model.
     var c = GenConfig()
     c.gen_length = 8
     c.block_length = 4
     c.steps = 4
-    c.mask_id = 510
     return c^
 
 
@@ -147,13 +143,10 @@ def test_sampler_threads_do_not_change_tokens() raises:
     for path in ["tiny-llada.gguf", "tiny-dream.gguf"]:
         var m = DiffusionLM(FIX + path, threads=2, max_tokens=16)
         var prompt: List[Int] = [5, 17, 300]
-        var mask = 510 if path == "tiny-dream.gguf" else 511
         var one = _tiny_cfg()
         one.threads = 1
-        one.mask_id = mask
         var four = _tiny_cfg()
         four.threads = 4
-        four.mask_id = mask
         var a = generate(m, prompt, one)
         var b = generate(m, prompt, four)
         assert_equal(len(a.tokens), len(b.tokens))
@@ -207,7 +200,6 @@ def _check_early_stop(path: String, mask: Int, block: Int) raises:
     c.gen_length = 16
     c.block_length = block
     c.steps = 16
-    c.mask_id = mask
     c.early_stop = False
     var full = generate(m, prompt, c)
     var saved_any = False
@@ -254,10 +246,9 @@ def _check_stop_report(path: String, mask: Int, block: Int) raises:
     c.gen_length = 16
     c.block_length = block
     c.steps = 16
-    c.mask_id = mask
     c.early_stop = False
     var full = generate(m, prompt, c)
-    assert_equal(full.steps_taken, full.forward_passes)
+    assert_equal(full.steps_taken(), full.forward_passes)
     assert_equal(full.stop_reason, "complete", path)
     assert_true(not full.stopped_early)
     var fixed = 0
@@ -266,7 +257,7 @@ def _check_stop_report(path: String, mask: Int, block: Int) raises:
         e.early_stop = True
         e.stop_ids = [full.tokens[i]]
         var early = generate(m, prompt, e)
-        assert_equal(early.steps_taken, early.forward_passes)
+        assert_equal(early.steps_taken(), early.forward_passes)
         if early.stopped_early:
             fixed += 1
             assert_equal(early.stop_reason, "answer_fixed", path)
@@ -290,7 +281,6 @@ def _threshold_cfg(threshold: Float64) -> GenConfig:
     c.gen_length = 16
     c.block_length = 8
     c.steps = 16
-    c.mask_id = 511
     c.early_stop = False
     c.threshold = threshold
     return c^
@@ -545,7 +535,6 @@ def test_dream_generation_resolves_every_mask() raises:
     var c = GenConfig()
     c.gen_length = 8
     c.steps = 4
-    c.mask_id = 510
     var out = generate(m, prompt, c)
     assert_equal(len(out.tokens), 11)
     for i in range(3, 11):
@@ -587,7 +576,6 @@ def test_observer_sees_dream_commits() raises:
     var c = GenConfig()
     c.gen_length = 8
     c.steps = 4
-    c.mask_id = 510
     var rec = Recorder()
     _ = generate_observed(m, prompt, c, rec)
     assert_equal(rec.committed, 8)

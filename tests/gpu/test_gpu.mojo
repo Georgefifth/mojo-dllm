@@ -890,7 +890,6 @@ def test_generation_with_device_stats_matches_host_scoring() raises:
     c.gen_length = 8
     c.block_length = 4
     c.steps = 4
-    c.mask_id = 511
     var device = generate(m, prompt, c)
     # full_logits copies every row to the host and scores it there.
     var h = c.copy()
@@ -911,7 +910,6 @@ def test_dual_cache_generation_on_the_host_logits_path() raises:
     c.gen_length = 8
     c.block_length = 4
     c.steps = 2
-    c.mask_id = 511
     var plain = GpuDiffusionLM(FIX + "tiny-llada.gguf", max_tokens=16)
     var a = generate(plain, prompt, c)
     var cached = GpuDiffusionLM(

@@ -822,7 +822,7 @@ def test_json_reports_steps_taken_and_the_stop_reason() raises:
     assert_equal(
         stop_json(res), ', "steps_taken": 0, "stop_reason": "complete"'
     )
-    res.steps_taken = 17
+    res.forward_passes = 17
     res.stop_reason = "converged"
     assert_equal(
         stop_json(res), ', "steps_taken": 17, "stop_reason": "converged"'
