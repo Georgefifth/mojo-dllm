@@ -6,7 +6,7 @@ stores [2 * ffn, hidden] gate/up rows followed, in a separate tensor, by
 Weights are repacked once; the workspace is reused between denoising steps.
 """
 
-from std.math import exp, sqrt, tanh
+from std.math import exp, isfinite, sqrt, tanh
 
 from mojo_dllm.formats.gguf import ggml_row_bytes, ggml_type_name
 from mojo_dllm.kernels.packed import PackedMatrix, matrix_bytes, pgemm
@@ -24,7 +24,10 @@ def gelu_tanh(x: Float32) -> Float32:
 
 
 struct Routing(Movable):
+    var capacity: Int
+    """Tokens the buffers hold. Set once, by the constructor."""
     var n_tokens: Int
+    """Tokens in use, at most `capacity`; change it with `set_len`."""
     var n_experts: Int
     var top_k: Int
     var ids: Bytes
@@ -42,11 +45,23 @@ struct Routing(Movable):
                 + ", top_k="
                 + String(top_k)
             )
+        self.capacity = n_tokens
         self.n_tokens = n_tokens
         self.n_experts = n_experts
         self.top_k = top_k
         self.ids = Bytes(n_tokens * top_k * 4)
         self.weights = Floats(n_tokens * top_k)
+
+    def set_len(mut self, n: Int) raises:
+        """Use the first `n` tokens of the buffers."""
+        if n < 0 or n > self.capacity:
+            raise Error(
+                "MoE routing holds "
+                + String(self.capacity)
+                + " tokens, cannot be set to "
+                + String(n)
+            )
+        self.n_tokens = n
 
 
 def route_tokens(
@@ -65,6 +80,13 @@ def route_tokens(
     """
     if hidden <= 0 or eps <= 0:
         raise Error("MoE router needs positive hidden size and RMS epsilon")
+    if routing.n_tokens < 0 or routing.n_tokens > routing.capacity:
+        raise Error(
+            "MoE routing holds "
+            + String(routing.capacity)
+            + " tokens, cannot route "
+            + String(routing.n_tokens)
+        )
     var normalized = Floats(routing.n_tokens * hidden)
     var probabilities = Floats(routing.n_tokens * routing.n_experts)
     var xp = normalized.ptr()
@@ -147,6 +169,13 @@ def route_tokens(
     # through the parallel callback, just as attention's score scratch does.
     _ = normalized^
     _ = probabilities^
+    # A NaN or infinite score makes every probability of the token NaN, and the
+    # selection then picks expert 0 for every slot. Name the token here, where
+    # the cause is, not in `grouped_experts` where it reads as a repeat.
+    for t in range(routing.n_tokens):
+        for s in range(top_k):
+            if not isfinite(wp.unsafe_load(t * top_k + s)):
+                raise Error("non-finite router scores for token " + String(t))
 
 
 struct ExpertWeights(Movable):

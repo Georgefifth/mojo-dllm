@@ -174,6 +174,11 @@ semantic versioning (0.y: minor bumps may break things).
 
 ### Changed
 
+- The CPU MoE router names the token whose router scores are NaN or infinite (`non-finite router scores for token N`,
+  issue #217). Before, every probability of that token was NaN, the selection picked expert 0 for every slot, and
+  `grouped_experts` reported "MoE routing repeats expert 0", which hides the cause. `Routing` also keeps its capacity
+  apart from the number of tokens in use: `set_len` refuses a length above the capacity, and `route_tokens` refuses a
+  count the buffers cannot hold before it writes any id.
 - `logits --prev-temp-inv` for DiffusionGemma refuses a value whose product with the final logit soft cap exceeds
   1e8 (issue #229). The old bound, 3e38, accepted values that turned the whole canvas to NaN without an error: the
   softmax subtracts the maximum from an unrounded product, and from about 1e9 (cap 30) the leftover residue makes the

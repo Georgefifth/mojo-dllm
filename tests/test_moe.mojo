@@ -392,8 +392,83 @@ def test_expert_weights_refuse_a_source_of_the_wrong_size() raises:
         )
 
 
+def test_routing_set_len_is_checked_against_the_capacity() raises:
+    var routing = Routing(4, 4, 2)
+    assert_equal(routing.capacity, 4)
+    assert_equal(routing.n_tokens, 4)
+    routing.set_len(2)
+    assert_equal(routing.n_tokens, 2)
+    assert_equal(routing.capacity, 4)
+    routing.set_len(4)
+    with assert_raises(
+        contains="MoE routing holds 4 tokens, cannot be set to 5"
+    ):
+        routing.set_len(5)
+    with assert_raises(
+        contains="MoE routing holds 4 tokens, cannot be set to -1"
+    ):
+        routing.set_len(-1)
+    assert_equal(routing.n_tokens, 4)
+
+
+def test_route_tokens_refuses_a_length_beyond_the_capacity() raises:
+    # `n_tokens` is a public field: a caller that writes past `set_len` would
+    # make `route_tokens` store ids past the buffers it owns.
+    var routing = Routing(2, 4, 2)
+    routing.n_tokens = 3
+    var x = Floats(3 * 256)
+    var router_matrix = Floats(4 * 256)
+    var router_scale = Floats(256)
+    with assert_raises(contains="MoE routing holds 2 tokens, cannot route 3"):
+        route_tokens(
+            x.ptr(), 256, router_scale.ptr(), router_matrix.ptr(), 1e-6, routing
+        )
+
+
+def test_route_tokens_names_the_token_with_non_finite_scores() raises:
+    var hidden = 256
+    var x = Floats(3 * hidden)
+    var router_matrix = Floats(4 * hidden)
+    var router_scale = Floats(hidden)
+    for i in range(x.n):
+        x[i] = Float32(i % 7) - 3.0
+    for i in range(router_scale.n):
+        router_scale[i] = 1.0
+    for i in range(router_matrix.n):
+        router_matrix[i] = Float32((i * 5) % 11) / 11.0
+    var routing = Routing(3, 4, 2)
+    route_tokens(
+        x.ptr(), hidden, router_scale.ptr(), router_matrix.ptr(), 1e-6, routing
+    )
+    for i in range(6):
+        assert_true(routing.weights[i] > 0.0 and routing.weights[i] < 1.0)
+    x[hidden + 5] = Float32(Float64("nan"))
+    with assert_raises(contains="non-finite router scores for token 1"):
+        route_tokens(
+            x.ptr(),
+            hidden,
+            router_scale.ptr(),
+            router_matrix.ptr(),
+            1e-6,
+            routing,
+        )
+    x[hidden + 5] = 1.0
+    router_matrix[3] = Float32(1e30 * 1e30)
+    with assert_raises(contains="non-finite router scores for token"):
+        route_tokens(
+            x.ptr(),
+            hidden,
+            router_scale.ptr(),
+            router_matrix.ptr(),
+            1e-6,
+            routing,
+        )
+
+
 def test_routing_rejects_invalid_top_k() raises:
-    with assert_raises():
+    with assert_raises(
+        contains="invalid MoE routing dimensions: tokens=16, experts=4, top_k=5"
+    ):
         _ = Routing(16, 4, 5)
 
 
@@ -420,13 +495,15 @@ def test_moe_empty_canvas_and_invalid_route_guards() raises:
         assert_equal(output[i], 12345)
     var routing = Routing(1, 4, 2)
     # Duplicate ids would exceed the full-canvas per-expert scratch capacity.
-    with assert_raises():
+    with assert_raises(contains="MoE routing repeats expert 0 for token 0"):
         grouped_experts(weights, x.ptr(), routing, ws, output.ptr(), 1)
     routing.ids.i32().unsafe_store(1, 4)
-    with assert_raises():
+    with assert_raises(contains="MoE routing expert id out of range: 4"):
         grouped_experts(weights, x.ptr(), routing, ws, output.ptr(), 1)
     routing.ids.i32().unsafe_store(1, 1)
-    with assert_raises():
+    with assert_raises(
+        contains="MoE routing or workspace does not match expert dimensions"
+    ):
         grouped_experts(weights, x.ptr(), routing, empty_ws, output.ptr(), 1)
     for i in range(256):
         assert_equal(output[i], 12345)

@@ -781,7 +781,7 @@ struct DiffusionGemma(Movable):
             th,
         )
         # Mixture of experts. The router reads the raw post-attention residual.
-        self.routing.n_tokens = rows
+        self.routing.set_len(rows)
         route_tokens(
             self.x.ptr(),
             d,
