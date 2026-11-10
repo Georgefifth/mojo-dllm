@@ -82,8 +82,11 @@ print the answer a second time. Without `--visual`, or when stdout is not a
 terminal, `run` prints the answer after generation.
 
 Without colour, newly committed tokens have no highlight. Redirected frames
-contain no ANSI escapes. With `--visual --json`, frames still go to stdout
-before the JSON line; consumers should select the line starting with `{`.
+contain no ANSI escapes. `--visual`, `--verbose` and `--dump-step-stats` print to
+stdout before the JSON object, so each of them is refused together with `--json`:
+the command stops with the usage error `--json cannot be combined with --visual`
+(or `--verbose`, `--dump-step-stats`) and exit status 2, before the model loads. With
+`--json`, stdout holds the one JSON object and nothing else.
 
 The checks that need only the flags run before the model file is opened, and each exits with status 2 and names the flag:
 `--threshold` outside 0 to 1 or not finite, `--device` other than `cpu` or `gpu`, `--remasking` outside the five names
@@ -161,7 +164,9 @@ costs no model load.
 ## Errors
 
 An error names the thing that is wrong. Usage errors exit with status 2 and
-change nothing; every other error exits with status 1.
+change nothing; every other error exits with status 1. Every `ERROR:` message goes to
+stderr, so stdout stays free for the answer or the JSON object; help text and
+`--version` go to stdout.
 
 | Message | Cause and next step |
 |---|---|

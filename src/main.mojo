@@ -17,7 +17,7 @@ from std.ffi import ErrNo, external_call, c_int, get_errno
 from std.math import isfinite
 from std.os import getenv, remove
 from std.os.path import getsize
-from std.sys import argv, exit, num_logical_cores
+from std.sys import argv, exit, num_logical_cores, stderr
 from std.time import perf_counter_ns
 
 from cli.args import Args, parse_csv_ints, unknown_flag_error
@@ -432,6 +432,12 @@ def check_args(a: Args, spec: CommandSpec) raises -> String:
             + "'\n"
             + usage_for(a.command)
         )
+    if _given(a, "json"):
+        # Each of these prints to stdout before the JSON object, so a consumer
+        # that parses stdout as JSON would fail on it.
+        for flag in ["visual", "verbose", "dump-step-stats"]:
+            if _given(a, flag):
+                return "--json cannot be combined with --" + flag + see
     var number = _number_problems(a)
     if number.byte_length() > 0:
         return number + see
@@ -1389,7 +1395,7 @@ def execute(raw: List[String]) -> Int:
     try:
         var d = decide(raw)
         if d.is_error():
-            print("ERROR:", d.text)
+            print("ERROR:", d.text, file=stderr)
             return d.code()
         if not d.proceeds():
             print(d.text)
@@ -1407,7 +1413,7 @@ def execute(raw: List[String]) -> Int:
             cmd_logits(a)
         return 0
     except e:
-        print("ERROR:", model_error(String(e)))
+        print("ERROR:", model_error(String(e)), file=stderr)
         return 1
 
 

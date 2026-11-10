@@ -355,6 +355,37 @@ def _run_json(
     return output.finish()
 
 
+def test_run_json_prints_one_line_and_nothing_else_on_stdout() raises:
+    # A consumer calls json.loads on stdout: the object must be all of it.
+    var tok = _tokenizer()
+    var model = DiffusionLM(FIX + "tiny-llada.gguf", threads=1, max_tokens=16)
+    var prompt: List[Int] = [5, 17, 300]
+    var text = _run_json(model, prompt, tok^, _tiny_gen_config(), True)
+    assert_true(text.startswith('{"runtime": "mojo-dllm"'))
+    assert_true(text.endswith("}\n"))
+    assert_equal(_count(text, "\n"), 1)
+    # Braces balance outside strings: a stray diagnostic would break this.
+    var depth = 0
+    var in_string = False
+    var escaped = False
+    for b in text.as_bytes():
+        var c = Int(b)
+        if in_string:
+            if escaped:
+                escaped = False
+            elif c == 92:
+                escaped = True
+            elif c == 34:
+                in_string = False
+        elif c == 34:
+            in_string = True
+        elif c == 123:
+            depth += 1
+        elif c == 125:
+            depth -= 1
+    assert_equal(depth, 0)
+
+
 def test_run_text_ends_at_the_first_end_of_generation_token() raises:
     # With early stop off the whole canvas is generated, so only the cut in
     # `_run` decides what the answer holds. The stop token is the first one that

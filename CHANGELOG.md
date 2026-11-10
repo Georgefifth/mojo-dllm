@@ -174,6 +174,11 @@ semantic versioning (0.y: minor bumps may break things).
 
 ### Changed
 
+- `run --json` keeps stdout clean (issues #223 and #110): `--json` together with `--visual`, `--verbose` or
+  `--dump-step-stats` is a usage error (`--json cannot be combined with --visual`, exit status 2, before the model
+  loads), because each of them prints to stdout before the JSON object. Every `ERROR:` line, usage error or not, now
+  goes to stderr; help text and `--version` stay on stdout. `docs/cli.md` no longer tells consumers to select the line
+  that starts with `{`.
 - The flag parser refuses what it used to accept silently (issue #222): a lookup of a flag name that the command
   does not declare (`a.int_or("max-token", 128)` returned the default), a value that is the name of a declared flag
   (`--prompt --verbose` took `--verbose` as the prompt), a value flag given twice (the last won) and an empty entry in

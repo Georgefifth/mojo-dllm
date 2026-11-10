@@ -1,3 +1,4 @@
+from std.ffi import c_int, external_call
 from std.os import mkdir, remove, rmdir
 from std.os.path import exists
 from std.testing import assert_equal, assert_true, assert_raises, TestSuite
@@ -7,7 +8,7 @@ from mojo_dllm.diffusion.sampler import GenConfig, GenResult
 from mojo_dllm.formats.gguf import GGUFFile
 from mojo_dllm.models.diffusion_gemma import DiffusionGemma
 from mojo_dllm.models.transformer import DiffusionLM
-from mojo_dllm.sys.mem import F32Ptr, Floats
+from mojo_dllm.sys.mem import Bytes, F32Ptr, Floats
 from mojo_dllm.sys.mmap import Mapping
 from mojo_dllm.tokenizer.bpe import Tokenizer
 from main import (
@@ -474,6 +475,134 @@ def test_decisions_derive_the_exit_code_from_their_kind() raises:
     assert_equal(run.text, "")
     assert_true(not run.is_error())
     assert_true(run.proceeds())
+
+
+struct _Capture(Movable):
+    """Redirects one file descriptor (1 for stdout, 2 for stderr) into a pipe
+    until `finish` hands back what was written to it."""
+
+    var read_fd: Int
+    var write_fd: Int
+    var saved: Int
+    var target: Int
+
+    def __init__(out self, target: Int) raises:
+        var fds = Bytes(8)
+        if external_call["pipe", c_int](fds.addr) != 0:
+            raise Error("pipe failed")
+        self.target = target
+        self.read_fd = Int(fds.i32().unsafe_load(0))
+        self.write_fd = Int(fds.i32().unsafe_load(1))
+        self.saved = Int(external_call["dup", c_int](c_int(target)))
+        if self.saved < 0:
+            raise Error("dup failed")
+        if (
+            external_call["dup2", c_int](c_int(self.write_fd), c_int(target))
+            < 0
+        ):
+            raise Error("redirect failed")
+
+    def finish(mut self) raises -> String:
+        _ = external_call["fflush", c_int](Int(0))
+        _ = external_call["dup2", c_int](c_int(self.saved), c_int(self.target))
+        _ = external_call["close", c_int](c_int(self.saved))
+        _ = external_call["close", c_int](c_int(self.write_fd))
+        var data = Bytes(16384)
+        var n = Int(
+            external_call["read", Int](self.read_fd, data.u8(), data.size)
+        )
+        _ = external_call["close", c_int](c_int(self.read_fd))
+        if n < 0:
+            raise Error("read of the captured stream failed")
+        return String(
+            StringSpan(unsafe_from_utf8=Span(unsafe_ptr=data.u8(), length=n))
+        )
+
+
+def _streams(argv: List[String]) raises -> Tuple[Int, String, String]:
+    """Runs `execute` and returns its status, its stdout and its stderr."""
+    var out = _Capture(1)
+    var err = _Capture(2)
+    var code = execute(argv)
+    var err_text = err.finish()
+    var out_text = out.finish()
+    return (code, out_text^, err_text^)
+
+
+def test_json_cannot_be_combined_with_the_flags_that_print_before_it() raises:
+    # Each of these writes to stdout before the JSON line, so a consumer that
+    # calls json.loads on stdout would fail. Maintainer decision on #110: refuse.
+    for flag in List[String](["--visual", "--verbose", "--dump-step-stats"]):
+        var rest = List[String](
+            ["--model", "m", "--prompt", "p", "--json", flag]
+        )
+        assert_equal(
+            _check("run", rest),
+            "--json cannot be combined with "
+            + flag
+            + "\nsee: mojo-dllm run --help",
+        )
+        var d = _decide("run", rest)
+        assert_equal(d.code(), 2)
+        assert_true(d.is_error())
+    for alone in List[String](
+        ["--json", "--visual", "--verbose", "--dump-step-stats"]
+    ):
+        assert_equal(
+            _check("run", ["--model", "m", "--prompt", "p", alone]), ""
+        )
+
+
+def test_usage_errors_and_runtime_errors_go_to_stderr() raises:
+    var usage = _streams(
+        [
+            "mojo-dllm",
+            "run",
+            "--model",
+            "m",
+            "--prompt",
+            "p",
+            "--json",
+            "--visual",
+        ]
+    )
+    assert_equal(usage[0], 2)
+    assert_equal(usage[1], "")
+    assert_equal(
+        usage[2],
+        (
+            "ERROR: --json cannot be combined with --visual\nsee: mojo-dllm run"
+            " --help\n"
+        ),
+    )
+    var runtime = _streams(
+        [
+            "mojo-dllm",
+            "run",
+            "--model",
+            "/nonexistent/model.gguf",
+            "--prompt",
+            "hi",
+        ]
+    )
+    assert_equal(runtime[0], 1)
+    assert_equal(runtime[1], "")
+    assert_true(runtime[2].startswith("ERROR: cannot open model file"))
+    var unknown = _streams(["mojo-dllm", "bogus"])
+    assert_equal(unknown[0], 2)
+    assert_equal(unknown[1], "")
+    assert_true(unknown[2].startswith("ERROR: unknown command: bogus"))
+
+
+def test_help_and_version_stay_on_stdout() raises:
+    var help = _streams(["mojo-dllm", "run", "--help"])
+    assert_equal(help[0], 0)
+    assert_true(help[1].startswith("usage:\n  mojo-dllm run"))
+    assert_equal(help[2], "")
+    var version = _streams(["mojo-dllm", "--version"])
+    assert_equal(version[0], 0)
+    assert_equal(version[1], version_line() + "\n")
+    assert_equal(version[2], "")
 
 
 def test_valid_arguments_proceed() raises:
