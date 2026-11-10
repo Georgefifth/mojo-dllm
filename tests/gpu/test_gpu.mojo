@@ -1013,6 +1013,29 @@ def test_gpu_forward_refuses_bad_windows_rows_and_tokens() raises:
     m.forward(toks, rows, out.ptr())
 
 
+def test_attention_gpu_refuses_a_head_dimension_it_has_no_kernel_for() raises:
+    var ctx = DeviceContext()
+    var q = ctx.enqueue_create_buffer[DType.float32](96)
+    var k = ctx.enqueue_create_buffer[DType.float32](96)
+    var v = ctx.enqueue_create_buffer[DType.float32](96)
+    var o = ctx.enqueue_create_buffer[DType.float32](96)
+    for hd in [32, 96]:
+        with assert_raises(
+            contains="GPU attention supports head dimensions 64 and 128, got"
+        ):
+            attention_gpu(
+                ctx,
+                dev_f32(q),
+                dev_f32(k),
+                dev_f32(v),
+                dev_f32(o),
+                1,
+                1,
+                1,
+                hd,
+            )
+
+
 def test_the_gpu_model_reads_but_does_not_run_diffusion_gemma() raises:
     with assert_raises(contains="diffusion-gemma does not run on this model"):
         _ = GpuDiffusionLM(FIX + "tiny-diffusion-gemma.gguf", max_tokens=16)

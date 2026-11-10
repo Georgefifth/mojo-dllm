@@ -174,6 +174,11 @@ semantic versioning (0.y: minor bumps may break things).
 
 ### Changed
 
+- `logits --prev-temp-inv` for DiffusionGemma refuses a value whose product with the final logit soft cap exceeds
+  1e8 (issue #229). The old bound, 3e38, accepted values that turned the whole canvas to NaN without an error: the
+  softmax subtracts the maximum from an unrounded product, and from about 1e9 (cap 30) the leftover residue makes the
+  exponential infinite. Measured on rows of logits in [-30, 30]: NaN in 61 of 64 rows at 1e9 and in none up to 1e8.
+  With the real cap of 30 the largest accepted value is about 3e6, a temperature of 3e-7.
 - Mapping a model file names the operating system's reason when it fails (issue #224). A failing `lseek` is no longer
   reported as "file is empty or unreadable" (an empty file now says `file is empty: PATH`; a size that cannot be read
   says `cannot get the size of PATH: <reason>`), and `mmap failed for PATH` carries the reason too. `getrusage`

@@ -942,6 +942,7 @@ def diffusion_gemma() -> None:
     write_gemma(out / "load-experts-gate-up-q5_0.gguf", types={"blk.1.ffn_gate_up_exps.weight": "Q5_0"}, **zeros)
     write_gemma(out / "load-self-cond-gate-q5_0.gguf", types={"self_cond_gate.weight": "Q5_0"}, **zeros)
     write_gemma(out / "load-self-cond-up-q5_0.gguf", types={"self_cond_up.weight": "Q5_0"}, **zeros)
+    write_gemma(out / "load-no-self-cond.gguf", omit=("self_cond_pre_norm.weight", "self_cond_gate.weight", "self_cond_up.weight", "self_cond_down.weight"), **zeros)
     write_gemma(out / "load-self-cond-down-q4_k.gguf", types={"self_cond_down.weight": "Q4_K"}, **zeros)
     write_gemma(out / "load-self-cond-up-short.gguf", shapes={"self_cond_up.weight": (h, 256)}, **zeros)
     write_gemma(out / "load-output-norm-short.gguf", shapes={"output_norm.weight": (h // 2,)}, **zeros)
@@ -982,6 +983,9 @@ DG_CASES = {
     # Prompt of 9 with self-conditioning: the previous step's logits are those of another canvas over the
     # same prompt, taken one denoising step back at temperature 0.8.
     "p9sc": dict(prompt=9, seed=7, prev_seed=99, prev_temp_inv=1.0 / 0.8),
+    # Self-conditioning with no prompt (the canvas alone) and past the sliding window (#229).
+    "p0sc": dict(prompt=0, seed=9, prev_seed=98, prev_temp_inv=1.0 / 0.8),
+    "p150sc": dict(prompt=150, seed=8, prev_seed=99, prev_temp_inv=1.0 / 0.8),
 }
 
 

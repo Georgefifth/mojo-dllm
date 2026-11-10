@@ -6,7 +6,7 @@ the issue text; `scripts/dg_numpy.py` repeats them in numpy for the tests.
 """
 
 
-from std.math import sqrt, tanh
+from std.math import isfinite, sqrt, tanh
 from std.time import perf_counter_ns
 
 from mojo_dllm.formats.gguf import GGUFFile, TensorInfo
@@ -613,7 +613,7 @@ struct DiffusionGemma(Movable):
         softmaxed in place at `prev_temp_inv` (1 / the previous temperature),
         which is why one 268 MB buffer serves a whole run.
         """
-        _check_temp(prev_temp_inv)
+        _check_temp(prev_temp_inv, self.cfg.softcap)
         self._step(canvas, logits, Int(logits), prev_temp_inv)
 
     def _step(
@@ -842,7 +842,7 @@ struct DiffusionGemma(Movable):
         `logits` holds the previous step's canvas logits [canvas, vocab] on
         entry and this step's on return; see `step_sc`.
         """
-        _check_temp(prev_temp_inv)
+        _check_temp(prev_temp_inv, self.cfg.softcap)
         var c = self.cfg
         var P = self._run(tokens, c.n_layers, Int(logits), prev_temp_inv)
         self._head(P, len(tokens) - P, logits)
@@ -855,8 +855,16 @@ struct DiffusionGemma(Movable):
         self._head(P, len(tokens) - P, logits)
 
 
-def _check_temp(inv: Float32) raises:
-    if not (inv > 0) or inv > 3.0e38:
+def _check_temp(inv: Float32, softcap: Float32) raises:
+    """The previous temperature's inverse must be positive and small enough for
+    `softmax_rows`. A logit times `inv` is rounded to 24 bits and the max is
+    subtracted from the unrounded product, so the difference carries a residue
+    of about 6e-8 of the product; once that passes 88 the exponential is
+    infinite and the canvas turns to NaN without an error (measured: logits up
+    to 30 give NaN rows from `inv` = 1e9 and none up to 1e8). The bound is 1e8 on
+    `inv` times the logit magnitude, `softcap` (1 when the file has no cap)."""
+    var bound = softcap if softcap > 1 else Float32(1)
+    if not (inv > 0) or not (inv * bound <= 1.0e8):
         raise Error(
             "the previous temperature must be positive and finite, got 1 / "
             + String(inv)

@@ -10,6 +10,7 @@ from mojo_dllm.formats.gguf import (
 )
 from mojo_dllm.models.diffusion_gemma import DiffusionGemma
 from mojo_dllm.models.transformer import DiffusionLM, ModelConfig
+from mojo_dllm.sys.mem import Floats
 
 comptime FIX = "tests/fixtures/"
 comptime DG = FIX + "diffusion-gemma/"
@@ -475,6 +476,21 @@ def test_constructor_refuses_self_conditioning_matrices_of_the_wrong_width() rai
     _refuses_load("load-self-cond-gate-q5_0", needle)
     _refuses_load("load-self-cond-up-q5_0", needle)
     _refuses_load("load-self-cond-down-q4_k", needle)
+
+
+def test_self_conditioning_refuses_a_file_that_has_none() raises:
+    # The file loads (self-conditioning is optional), and a pass that asks for
+    # it says why it cannot have it.
+    var m = DiffusionGemma(
+        DG + "load-no-self-cond.gguf", threads=1, max_tokens=32
+    )
+    var c = m.config()
+    var tokens = List[Int]()
+    for _ in range(c.canvas):
+        tokens.append(5)
+    var logits = Floats(c.canvas * c.vocab)
+    with assert_raises(contains="this file has no self-conditioning tensors"):
+        m.forward_sc(tokens, logits.ptr(), 1.25)
 
 
 def test_constructor_refuses_a_shrunk_self_conditioning_matrix() raises:
