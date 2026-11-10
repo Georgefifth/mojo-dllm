@@ -183,7 +183,8 @@ def attention(
     var scale = Float32(1.0 / sqrt(Float64(head_dim)))
     var NK = L if n_keys < 0 else n_keys
     var nqb = (L + QB - 1) // QB
-    var scores = Floats(n_heads * nqb * QB * NK)
+    # Each work item writes every score of its rows before the softmax reads one.
+    var scores = Floats(n_heads * nqb * QB * NK, zero=False)
     var sp = scores.ptr()
 
     def work(item: Int) {imm}:

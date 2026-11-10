@@ -174,6 +174,11 @@ semantic versioning (0.y: minor bumps may break things).
 
 ### Changed
 
+- The transposed embedding table of DiffusionGemma's self-conditioning is no longer zeroed before it is written, and the
+  `soft_embed` partial sums and the CPU attention scores are not zeroed where every element is written first
+  (issue #226). `Floats` takes `zero=False` for that. At the real size (vocabulary 262144, hidden 2816, 256 canvas
+  rows) building the table took a median 5.2 s before and 2.0 s after; the peak RSS is unchanged at 3.89 GB and a
+  `soft_embed` call took 2.09 s before and 1.97 s after. The numbers are bit for bit the same.
 - The CPU MoE router names the token whose router scores are NaN or infinite (`non-finite router scores for token N`,
   issue #217). Before, every probability of that token was NaN, the selection picked expert 0 for every slot, and
   `grouped_experts` reported "MoE routing repeats expert 0", which hides the cause. `Routing` also keeps its capacity

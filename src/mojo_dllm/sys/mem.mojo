@@ -99,12 +99,13 @@ struct Bytes(Movable):
 
 
 struct Floats(Movable):
-    """An owned f32 array of `n` elements, zero-initialised."""
+    """An owned f32 array of `n` elements, zero-initialised unless `zero` is
+    False, in which case the caller writes every element before it reads one."""
 
     var addr: Int
     var n: Int
 
-    def __init__(out self, n: Int) raises:
+    def __init__(out self, n: Int, zero: Bool = True) raises:
         if n > Int.MAX // 4:
             # n * 4 wraps: 2^62 floats would be asked of the allocator as 0.
             raise Error(
@@ -113,7 +114,7 @@ struct Floats(Movable):
                 + " floats: the size in bytes does not fit in an Int"
             )
         self.n = n
-        self.addr = alloc_bytes(n * 4)
+        self.addr = alloc_bytes(n * 4, zero)
 
     def __deinit__(deinit self):
         free_bytes(self.addr)
