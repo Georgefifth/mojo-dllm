@@ -192,7 +192,7 @@ stderr, so stdout stays free for the answer or the JSON object; help text and
 | `ERROR: cannot get the size of PATH: Illegal seek` | The path opens but is not a regular file (a pipe or a FIFO). The operating system names the reason |
 | `ERROR: mmap failed for PATH: No such device` | The file cannot be mapped (a device or a pseudo file). The operating system names the reason; `Cannot allocate memory` means the address space is exhausted |
 | `ERROR: is a directory: PATH` | The model path names a directory |
-| `error: invalid UTF-8 was detected in one or more arguments` | The Mojo runtime prints this and exits with status 125 before the command starts, when a flag value such as `--prompt` is not UTF-8 (a Latin-1 text, for example). Save the text as UTF-8. The command never sees the value |
+| `ERROR: flag --prompt is not valid UTF-8: invalid byte at offset N` | `run` and `tokenize` refuse a prompt that is not UTF-8 (a Latin-1 text, for example) before the model loads and exit with status 2. N is the byte offset of the first bad byte. Save the text as UTF-8 |
 | `ERROR: PATH is not a GGUF file (bad magic).` | A failed download leaves an HTML error page with a `.gguf` name. Delete the file and run `./mojo-dllm pull` again |
 
 The remaining errors exit with status 1 and come from the model file itself:

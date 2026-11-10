@@ -329,10 +329,10 @@ semantic versioning (0.y: minor bumps may break things).
   next byte, as in llama.cpp's `unicode_cpts_from_utf8`. It used to take the
   next one to three bytes whatever they were: the Latin-1 text `caf\xe9 au
   lait` decoded `E9 20 61` to U+9821 and lost the space and the `a`. The check
-  lives in the new `formats/utf8.mojo`. The command line cannot hand such a text
-  to `run` or `tokenize`, because the Mojo runtime refuses an argument that is
-  not UTF-8 with exit status 125 before the program starts; `docs/cli.md` lists
-  that message (#197).
+  lives in the new `formats/utf8.mojo`. `run` and `tokenize` refuse a
+  `--prompt` that is not valid UTF-8 with exit status 2 and the offset of the
+  first bad byte (`flag --prompt is not valid UTF-8: invalid byte at offset 3`);
+  the Mojo runtime does not refuse such an argument itself (#197).
 - The byte-level tokenizer loader and the gemma4 vocabulary share one
   `validate_token_table` (new `tokenizer/vocab.mojo`) and one `special_token_id`.
   The byte-level loader now refuses a token type array of another length than

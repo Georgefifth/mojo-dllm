@@ -23,6 +23,7 @@ from std.time import perf_counter_ns
 from cli.args import Args, parse_csv_ints, unknown_flag_error
 from cli.visual import CanvasPrinter, prints_answer
 from mojo_dllm.formats.gguf import GGUFFile, GGUF_TYPE_ARRAY
+from mojo_dllm.formats.utf8 import utf8_first_invalid
 from mojo_dllm.diffusion.sampler import (
     GenConfig,
     GenResult,
@@ -438,6 +439,14 @@ def check_args(a: Args, spec: CommandSpec) raises -> String:
     var number = _number_problems(a)
     if number.byte_length() > 0:
         return number + see
+    if (a.command == "run" or a.command == "tokenize") and _given(a, "prompt"):
+        var bad = utf8_first_invalid(a.get("prompt").as_bytes())
+        if bad >= 0:
+            return (
+                "flag --prompt is not valid UTF-8: invalid byte at offset "
+                + String(bad)
+                + see
+            )
     return String("")
 
 

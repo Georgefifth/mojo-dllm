@@ -1483,6 +1483,44 @@ def test_the_block_and_step_split_is_checked_for_llada_only() raises:
     check_arch_flags(_arch_run_args(["--max-tokens", "100"]), "dream")
 
 
+def _latin1_text() -> String:
+    # "caf" then 0xE9 (a Latin-1 e acute), " au lait": not UTF-8.
+    var raw = List[UInt8]()
+    for b in "caf".as_bytes():
+        raw.append(b)
+    raw.append(0xE9)
+    for b in " au lait".as_bytes():
+        raw.append(b)
+    return String(StringSpan(unsafe_from_utf8=Span(raw)))
+
+
+def test_run_and_tokenize_refuse_a_prompt_that_is_not_utf8() raises:
+    # Measured: the Mojo runtime does not refuse such an argument, so the
+    # command does, with the offset of the first bad byte.
+    for command in ["run", "tokenize"]:
+        var rest = List[String](["--model", "m", "--prompt", _latin1_text()])
+        _same(
+            String(command),
+            rest,
+            "flag --prompt is not valid UTF-8: invalid byte at offset 3",
+        )
+    var fine = List[String](["--model", "m", "--prompt", "caf\u00e9 au lait"])
+    assert_equal(_check("run", fine), "")
+    assert_equal(_check("tokenize", fine), "")
+    # The first bad byte of a truncated sequence is its lead byte.
+    var raw = List[UInt8]()
+    for b in "ab".as_bytes():
+        raw.append(b)
+    raw.append(0xE2)
+    raw.append(0x82)
+    var cut = String(StringSpan(unsafe_from_utf8=Span(raw)))
+    _same(
+        "run",
+        List[String](["--model", "m", "--prompt", cut]),
+        "flag --prompt is not valid UTF-8: invalid byte at offset 2",
+    )
+
+
 def test_remasking_must_suit_the_architecture_before_the_model_loads() raises:
     var spec = command_spec("run")
     var entropy = Args(
