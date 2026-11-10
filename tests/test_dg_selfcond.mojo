@@ -261,6 +261,11 @@ def test_self_conditioning_guards() raises:
     for bad in [0.0, -1.0, 1e30 * 1e30, 3e38, 1e9, 5e6]:
         with assert_raises(contains="previous temperature"):
             m.forward_sc(cs.tokens, buf.ptr(), Float32(bad))
+    # The message states the real bound, not "finite": 5e6 is finite.
+    with assert_raises(
+        contains="times the logit soft cap 30.0 at most 1e8, got 1 / 5000000.0"
+    ):
+        m.forward_sc(cs.tokens, buf.ptr(), 5e6)
     # Inside the bound (3e6 times the cap of 30 is 9e7) the logits stay finite.
     var ok = _copy_prev(cs)
     m.forward_sc(cs.tokens, ok.ptr(), 3e6)

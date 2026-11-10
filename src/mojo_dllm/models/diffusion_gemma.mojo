@@ -855,7 +855,10 @@ def _check_temp(inv: Float32, softcap: Float32) raises:
     var bound = softcap if softcap > 1 else Float32(1)
     if not (inv > 0) or not (inv * bound <= 1.0e8):
         raise Error(
-            "the previous temperature must be positive and finite, got 1 / "
+            "the previous temperature's inverse must be positive and, times"
+            " the logit soft cap "
+            + String(bound)
+            + " at most 1e8, got 1 / "
             + String(inv)
         )
 
