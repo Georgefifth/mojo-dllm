@@ -205,6 +205,69 @@ def test_forward_refuses_a_token_id_outside_the_vocabulary() raises:
     m.forward(_tokens(), rows, out.ptr())
 
 
+def _window_logits(
+    mut m: DiffusionLM, toks: List[Int], win: List[Int]
+) raises -> Floats:
+    var out = Floats(len(win) * VOCAB)
+    m.forward_window(toks, 3, 7, win, out.ptr())
+    return out^
+
+
+def _full_pass(mut m: DiffusionLM, toks: List[Int]) raises -> Floats:
+    var all_rows = List[Int]()
+    for i in range(len(toks)):
+        all_rows.append(i)
+    var out = Floats(len(toks) * VOCAB)
+    m.forward(toks, all_rows, out.ptr())
+    return out^
+
+
+def _check_stale_window(path: String, outside: Int) raises:
+    # A window pass recomputes rows [3, 7) and reads every other row's K/V from
+    # the cache. Changing a token outside the window after the full pass must
+    # therefore change nothing: the cache is stale on purpose. A pass that
+    # recomputed the outside rows from the tokens would see the new token.
+    var m = DiffusionLM(FIX + path, threads=2, max_tokens=16, kv_cache=True)
+    var toks = _tokens()
+    var win: List[Int] = [3, 4, 6]
+    _ = _full_pass(m, toks)
+    var w1 = _window_logits(m, toks, win)
+
+    var changed = _tokens()
+    changed[outside] = 99
+    _ = _full_pass(m, toks)
+    var w2 = _window_logits(m, changed, win)
+    for i in range(w1.n):
+        assert_equal(
+            w1[i],
+            w2[i],
+            path + ": window logit " + String(i) + " saw the changed token",
+        )
+
+    # The changed token does matter to a fresh full pass, so the equality
+    # above is not an artifact of a token that no row reads.
+    _ = _full_pass(m, changed)
+    var fresh = _window_logits(m, changed, win)
+    var differing = 0
+    for i in range(w1.n):
+        if fresh[i] != w1[i]:
+            differing += 1
+    assert_true(
+        differing > 0,
+        path + ": a fresh pass on the changed canvas equals the stale window",
+    )
+
+
+def test_a_window_reads_stale_cache_rows_llada() raises:
+    _check_stale_window("tiny-llada.gguf", 1)
+    _check_stale_window("tiny-llada.gguf", 7)
+
+
+def test_a_window_reads_stale_cache_rows_dream() raises:
+    _check_stale_window("tiny-dream.gguf", 1)
+    _check_stale_window("tiny-dream.gguf", 7)
+
+
 def test_load_matrix_refuses_a_shape_that_is_not_the_tensors() raises:
     # kquants.gguf: q4k is 512 wide and 4 rows. A wrong row count or width
     # would let `PackedMatrix` read past the tensor.
