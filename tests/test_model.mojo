@@ -95,6 +95,116 @@ def test_rejects_too_long_input() raises:
         m.forward(toks, rows, out.ptr())
 
 
+def _refuses_window(
+    mut m: DiffusionLM,
+    toks: List[Int],
+    lo: Int,
+    hi: Int,
+    rows: List[Int],
+    needle: String,
+) raises:
+    """`forward_window` refuses, says `needle`, and writes nothing to the
+    logits buffer: a guard that ran late would have written there first. The
+    buffer holds a row for every position, so a pass that is wrongly accepted
+    fails the assertions instead of overrunning it."""
+    var out = Floats(9 * VOCAB)
+    for i in range(out.n):
+        out[i] = 7.0
+    try:
+        m.forward_window(toks, lo, hi, rows, out.ptr())
+    except e:
+        if needle not in String(e):
+            raise Error(
+                "window ("
+                + String(lo)
+                + ", "
+                + String(hi)
+                + "): the error does not say '"
+                + needle
+                + "': "
+                + String(e)
+            )
+        for i in range(out.n):
+            assert_equal(out[i], 7.0, "the refused pass wrote to the logits")
+        return
+    raise Error("window (" + String(lo) + ", " + String(hi) + "): accepted")
+
+
+def test_forward_refuses_output_rows_that_are_not_ascending_inside_the_window() raises:
+    var m = DiffusionLM(FIX + "tiny-llada.gguf", threads=2, max_tokens=16)
+    var toks = _tokens()
+    var ascending = "output rows must be ascending positions inside the window"
+    var a: List[Int] = [3, 3]
+    _refuses_window(m, toks, 0, 8, a, ascending)
+    var b: List[Int] = [4, 3]
+    _refuses_window(m, toks, 0, 8, b, ascending)
+    var c: List[Int] = [8]
+    _refuses_window(m, toks, 0, 8, c, ascending)
+    var d: List[Int] = [-1]
+    _refuses_window(m, toks, 0, 8, d, ascending)
+    var e: List[Int] = [0, 2, 9]
+    _refuses_window(m, toks, 0, 8, e, ascending)
+
+
+def test_forward_refuses_no_output_rows() raises:
+    var m = DiffusionLM(FIX + "tiny-llada.gguf", threads=2, max_tokens=16)
+    var none = List[Int]()
+    _refuses_window(
+        m, _tokens(), 0, 8, none, "forward called with no output rows"
+    )
+
+
+def test_forward_refuses_a_window_that_is_not_a_range_inside_the_input() raises:
+    var m = DiffusionLM(FIX + "tiny-llada.gguf", threads=2, max_tokens=16)
+    var toks = _tokens()
+    var rows: List[Int] = [3]
+    var needle = "forward window must be a non-empty range inside the input"
+    _refuses_window(m, toks, 0, 0, rows, needle)
+    _refuses_window(m, toks, -1, 4, rows, needle)
+    _refuses_window(m, toks, 2, 9, rows, needle)
+    _refuses_window(m, toks, 5, 5, rows, needle)
+    _refuses_window(m, toks, 6, 2, rows, needle)
+
+
+def test_a_partial_window_refuses_rows_outside_it() raises:
+    # With a warm cache a window (2, 6) is allowed, and its rows must lie in it.
+    var m = DiffusionLM(
+        FIX + "tiny-llada.gguf", threads=2, max_tokens=16, kv_cache=True
+    )
+    var toks = _tokens()
+    var all_rows = List[Int]()
+    for i in range(len(toks)):
+        all_rows.append(i)
+    var out = Floats(len(toks) * VOCAB)
+    m.forward(toks, all_rows, out.ptr())
+    var ascending = "output rows must be ascending positions inside the window"
+    var below: List[Int] = [1]
+    _refuses_window(m, toks, 2, 6, below, ascending)
+    var at_hi: List[Int] = [6]
+    _refuses_window(m, toks, 2, 6, at_hi, ascending)
+    var inside: List[Int] = [2, 5]
+    var two = Floats(2 * VOCAB)
+    m.forward(toks, all_rows, out.ptr())
+    m.forward_window(toks, 2, 6, inside, two.ptr())
+
+
+def test_forward_refuses_a_token_id_outside_the_vocabulary() raises:
+    var m = DiffusionLM(FIX + "tiny-llada.gguf", threads=2, max_tokens=16)
+    var rows: List[Int] = [0]
+    var below = _tokens()
+    below[2] = -1
+    var needle = "token id -1 is outside the vocabulary"
+    var out = Floats(VOCAB)
+    with assert_raises(contains=needle):
+        m.forward(below, rows, out.ptr())
+    var above = _tokens()
+    above[2] = VOCAB
+    with assert_raises(contains="token id 512 is outside the vocabulary"):
+        m.forward(above, rows, out.ptr())
+    # The model still runs afterwards.
+    m.forward(_tokens(), rows, out.ptr())
+
+
 def test_load_matrix_refuses_a_shape_that_is_not_the_tensors() raises:
     # kquants.gguf: q4k is 512 wide and 4 rows. A wrong row count or width
     # would let `PackedMatrix` read past the tensor.

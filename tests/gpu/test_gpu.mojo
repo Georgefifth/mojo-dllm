@@ -951,6 +951,68 @@ def test_vec_len_refuses_a_length_that_is_not_the_tensors() raises:
         _ = _vec_len(g, "f16", 129)
 
 
+def _gpu_refuses_window(
+    mut m: GpuDiffusionLM,
+    toks: List[Int],
+    lo: Int,
+    hi: Int,
+    rows: List[Int],
+    needle: String,
+) raises:
+    """The GPU twin of test_model's `_refuses_window`."""
+    var out = Floats(9 * 512)
+    for i in range(out.n):
+        out[i] = 7.0
+    try:
+        m.forward_window(toks, lo, hi, rows, out.ptr())
+    except e:
+        if needle not in String(e):
+            raise Error(
+                "window ("
+                + String(lo)
+                + ", "
+                + String(hi)
+                + "): the error does not say '"
+                + needle
+                + "': "
+                + String(e)
+            )
+        for i in range(out.n):
+            assert_equal(out[i], 7.0, "the refused pass wrote to the logits")
+        return
+    raise Error("window (" + String(lo) + ", " + String(hi) + "): accepted")
+
+
+def test_gpu_forward_refuses_bad_windows_rows_and_tokens() raises:
+    var m = GpuDiffusionLM(FIX + "tiny-llada.gguf", max_tokens=16)
+    var toks: List[Int] = [5, 17, 300, 511, 511, 42, 511, 7]
+    var ascending = "output rows must be ascending positions inside the window"
+    var a: List[Int] = [3, 3]
+    _gpu_refuses_window(m, toks, 0, 8, a, ascending)
+    var b: List[Int] = [4, 3]
+    _gpu_refuses_window(m, toks, 0, 8, b, ascending)
+    var c: List[Int] = [8]
+    _gpu_refuses_window(m, toks, 0, 8, c, ascending)
+    var d: List[Int] = [-1]
+    _gpu_refuses_window(m, toks, 0, 8, d, ascending)
+    var none = List[Int]()
+    _gpu_refuses_window(
+        m, toks, 0, 8, none, "forward called with no output rows"
+    )
+    var rows: List[Int] = [3]
+    var needle = "forward window must be a non-empty range inside the input"
+    _gpu_refuses_window(m, toks, 0, 0, rows, needle)
+    _gpu_refuses_window(m, toks, -1, 4, rows, needle)
+    _gpu_refuses_window(m, toks, 2, 9, rows, needle)
+    var bad = toks.copy()
+    bad[2] = -1
+    var out = Floats(512)
+    with assert_raises(contains="token id -1 is outside the vocabulary"):
+        m.forward(bad, rows, out.ptr())
+    # The model still runs after each refusal.
+    m.forward(toks, rows, out.ptr())
+
+
 def test_the_gpu_model_reads_but_does_not_run_diffusion_gemma() raises:
     with assert_raises(contains="diffusion-gemma does not run on this model"):
         _ = GpuDiffusionLM(FIX + "tiny-diffusion-gemma.gguf", max_tokens=16)
