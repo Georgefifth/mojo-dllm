@@ -39,7 +39,7 @@ from mojo_dllm.gpu.kernels import (
     _launch,
     _launch_q6,
 )
-from mojo_dllm.gpu.model import GpuDiffusionLM
+from mojo_dllm.gpu.model import GpuDiffusionLM, _Planner, _plan_matrix, _vec_len
 from mojo_dllm.kernels.ops import (
     rmsnorm,
     rope_table,
@@ -921,6 +921,34 @@ def test_dual_cache_generation_on_the_host_logits_path() raises:
     assert_equal(len(a.tokens), len(b.tokens))
     for i in range(len(a.tokens)):
         assert_equal(a.tokens[i], b.tokens[i], "token " + String(i))
+
+
+def test_plan_matrix_refuses_a_shape_that_is_not_the_tensors() raises:
+    # The GPU twin of test_load_matrix_refuses_a_shape_that_is_not_the_tensors.
+    var g = GGUFFile(FIX + "kquants.gguf")
+    var plan = _Planner()
+    var m = _plan_matrix(g, plan, "q4k", 4, 512)
+    assert_equal(m.rows, 4)
+    assert_true(plan.size > 0)
+    with assert_raises(
+        contains="tensor shape mismatch for q4k: [512, 4], expected [512, 8]"
+    ):
+        _ = _plan_matrix(g, plan, "q4k", 8, 512)
+    with assert_raises(
+        contains="tensor shape mismatch for q4k: [512, 4], expected [256, 4]"
+    ):
+        _ = _plan_matrix(g, plan, "q4k", 4, 256)
+    with assert_raises(contains="tensor f16 is F16: matrix kernels exist"):
+        _ = _plan_matrix(g, plan, "f16", 2, 64)
+
+
+def test_vec_len_refuses_a_length_that_is_not_the_tensors() raises:
+    var g = GGUFFile(FIX + "kquants.gguf")
+    assert_equal(_vec_len(g, "f16", 128), 128)
+    with assert_raises(contains="tensor shape mismatch for f16: [64, 2]"):
+        _ = _vec_len(g, "f16", 64)
+    with assert_raises(contains="tensor shape mismatch for f16: [64, 2]"):
+        _ = _vec_len(g, "f16", 129)
 
 
 def test_the_gpu_model_reads_but_does_not_run_diffusion_gemma() raises:

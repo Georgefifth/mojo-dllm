@@ -801,7 +801,8 @@ def write_gemma(
     """One diffusion-gemma file. `keys` replaces metadata values and `drop` removes keys; `shapes` and `types`
     replace tensor shapes and GGML types, `omit` removes tensors and `add` adds (name -> (shape, type)).
     `tensors` is "full" (every
-    tensor of the real file, random weights), "thin" (what the reader looks at, zero bytes) or "none"."""
+    tensor of the real file, random weights), "zeros" (every tensor, zero bytes: enough for the constructor's
+    refusals, and git stores it for nothing), "thin" (what the reader looks at, zero bytes) or "none"."""
     c = c or GEMMA
     meta = {**gemma_keys(c), **(keys or {})}
     for key in drop:
@@ -822,7 +823,7 @@ def write_gemma(
         else:
             assert kind in ("i32[]", "bool[]", "f32[]", "str[]"), kind
             w.add_array(key, value)
-    spec = {} if tensors == "none" else gemma_tensors(c, tensors == "full")
+    spec = {} if tensors == "none" else gemma_tensors(c, tensors in ("full", "zeros"))
     for name, shape in (shapes or {}).items():
         assert name in spec, name
         spec[name] = (shape, spec[name][1])
@@ -928,6 +929,22 @@ def diffusion_gemma() -> None:
     write_gemma(out / "vocab-504-self-cond.gguf", c={**GEMMA, "vocab": 504}, add=gate)
     write_gemma(out / "vocab-500-no-self-cond.gguf", c={**GEMMA, "vocab": 500})
     write_gemma(out / "all-sliding.gguf", c={**GEMMA, "sliding": [True, True], "kv": [4, 4]})
+
+    # The constructor's own refusals (#209): every tensor is present and the config accepts the file, so the
+    # error comes from a loader or from the block-size check. Zero bytes are enough, the loaders read no weights.
+    zeros = {"tensors": "zeros"}
+    h = GEMMA["hidden"]
+    write_gemma(out / "load-attn-q-q5_0.gguf", types={"blk.0.attn_q.weight": "Q5_0"}, **zeros)
+    write_gemma(out / "load-attn-q-shrunk.gguf", shapes={"blk.0.attn_q.weight": (h, 256)}, **zeros)
+    write_gemma(out / "load-attn-norm-short.gguf", shapes={"blk.0.attn_norm.weight": (h // 2,)}, **zeros)
+    write_gemma(out / "load-attn-output-narrow.gguf", shapes={"blk.1.attn_output.weight": (256, h)}, **zeros)
+    write_gemma(out / "load-ffn-down-q4_k.gguf", types={"blk.0.ffn_down.weight": "Q4_K"}, **zeros)
+    write_gemma(out / "load-experts-gate-up-q5_0.gguf", types={"blk.1.ffn_gate_up_exps.weight": "Q5_0"}, **zeros)
+    write_gemma(out / "load-self-cond-gate-q5_0.gguf", types={"self_cond_gate.weight": "Q5_0"}, **zeros)
+    write_gemma(out / "load-self-cond-up-q5_0.gguf", types={"self_cond_up.weight": "Q5_0"}, **zeros)
+    write_gemma(out / "load-self-cond-down-q4_k.gguf", types={"self_cond_down.weight": "Q4_K"}, **zeros)
+    write_gemma(out / "load-self-cond-up-short.gguf", shapes={"self_cond_up.weight": (h, 256)}, **zeros)
+    write_gemma(out / "load-output-norm-short.gguf", shapes={"output_norm.weight": (h // 2,)}, **zeros)
     write_gemma(out / "all-global.gguf", c={**GEMMA, "sliding": [False, False], "kv": [1, 1]})
     h, ex, ef = GEMMA["hidden"], GEMMA["experts"], GEMMA["expert_ffn"]
     tensor_cases: dict[str, dict] = {

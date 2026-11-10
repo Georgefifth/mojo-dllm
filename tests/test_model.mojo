@@ -2,7 +2,12 @@ from std.math import sqrt
 from std.testing import assert_equal, assert_true, assert_raises, TestSuite
 
 from mojo_dllm.formats.gguf import GGUFFile
-from mojo_dllm.models.transformer import DiffusionLM, ModelConfig
+from mojo_dllm.models.transformer import (
+    DiffusionLM,
+    ModelConfig,
+    _load_matrix,
+    _load_vector,
+)
 from mojo_dllm.sys.mem import F32Ptr, Floats
 from mojo_dllm.sys.mmap import Mapping
 
@@ -88,6 +93,43 @@ def test_rejects_too_long_input() raises:
     var out = Floats(VOCAB)
     with assert_raises(contains="exceeds"):
         m.forward(toks, rows, out.ptr())
+
+
+def test_load_matrix_refuses_a_shape_that_is_not_the_tensors() raises:
+    # kquants.gguf: q4k is 512 wide and 4 rows. A wrong row count or width
+    # would let `PackedMatrix` read past the tensor.
+    var g = GGUFFile(FIX + "kquants.gguf")
+    var ll = GGUFFile(FIX + "tiny-llada.gguf")
+    var ok = _load_matrix(ll, "blk.0.attn_q.weight", 256, 256, 1)
+    assert_equal(ok.N, 256)
+    with assert_raises(
+        contains="tensor shape mismatch for q4k: [512, 4], expected [512, 8]"
+    ):
+        _ = _load_matrix(g, "q4k", 8, 512, 1)
+    with assert_raises(
+        contains="tensor shape mismatch for q4k: [512, 4], expected [256, 4]"
+    ):
+        _ = _load_matrix(g, "q4k", 4, 256, 1)
+    with assert_raises(contains="tensor not found: absent"):
+        _ = _load_matrix(g, "absent", 4, 512, 1)
+
+
+def test_load_matrix_refuses_a_type_without_a_matrix_kernel() raises:
+    var g = GGUFFile(FIX + "kquants.gguf")
+    with assert_raises(
+        contains="tensor f16 is F16: matrix kernels exist for Q4_K and Q6_K"
+    ):
+        _ = _load_matrix(g, "f16", 2, 64, 1)
+
+
+def test_load_vector_refuses_a_length_that_is_not_the_tensors() raises:
+    var g = GGUFFile(FIX + "kquants.gguf")
+    var v = _load_vector(g, "f16", 128)
+    assert_equal(v.n, 128)
+    with assert_raises(contains="tensor shape mismatch for f16: [64, 2]"):
+        _ = _load_vector(g, "f16", 64)
+    with assert_raises(contains="tensor shape mismatch for f16: [64, 2]"):
+        _ = _load_vector(g, "f16", 129)
 
 
 def test_rejects_wrong_architecture() raises:
