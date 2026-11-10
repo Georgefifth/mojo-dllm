@@ -153,9 +153,11 @@ architecture alone and are refused on the others:
 - `--prev FILE` names the previous denoising step's canvas logits, `[canvas,
   vocab]` f32 as this command writes them, and turns self-conditioning on.
   `--prev-temp-inv X`, which must come with it, is 1 divided by the temperature
-  of that previous step (1.25 for the first step's 0.8). It must be finite and
-  above 0, and `--path` must be `unified` or `cached`; both are checked before
-  any model is read.
+  of that previous step (1.25 for the first step's 0.8). It must be above 0 and
+  its product with the model's final logit soft cap must not exceed 1e8 (about
+  3e6 with the cap of 30), because the softmax turns the logits to NaN beyond
+  that, and `--path` must be `unified` or `cached`; the path is checked before
+  any model is read, the bound when the pass starts.
 
 `--rows` and the size of the `--prev` file are checked against the canvas length
 that the file's header declares, before a weight is mapped, so a wrong `--rows`
