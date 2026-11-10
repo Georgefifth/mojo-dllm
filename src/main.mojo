@@ -36,6 +36,7 @@ from mojo_dllm.models.transformer import (
     DenoisingModel,
     DiffusionLM,
     ModelConfig,
+    Timings,
     GEMMA_ARCH,
 )
 from mojo_dllm.sys.mem import Bytes, F32Ptr, Floats, U8Ptr
@@ -716,17 +717,11 @@ def check_context_length(
         )
 
 
-def cmd_run(a: Args) raises:
-    var interval: Int
-    try:
-        interval = a.int_or("visual-interval", 1)
-    except:
-        raise Error("--visual-interval needs an integer")
-    if interval < 1:
-        raise Error("--visual-interval must be at least 1")
-    if a.has("visual-interval") and not a.has("visual"):
-        raise Error("--visual-interval needs --visual")
-    var threads = a.int_or("threads", num_logical_cores())
+def gen_config(a: Args) raises -> GenConfig:
+    """The sampler settings the `run` flags ask for: each flag to its field,
+    with the defaults that depend on another flag (`--steps` is `--max-tokens`,
+    `--block-length` is `--max-tokens` capped at 32). The stop and canvas
+    settings that need the tokenizer are added by `_run`."""
     var cfg = GenConfig()
     cfg.gen_length = a.int_or("max-tokens", 128)
     cfg.steps = a.int_or("steps", cfg.gen_length)
@@ -737,13 +732,36 @@ def cmd_run(a: Args) raises:
     cfg.threshold = a.float_or("threshold", 0.0)
     cfg.full_logits = a.has("full-logits")
     cfg.dual_cache = a.has("dual-cache")
-    cfg.threads = threads
+    cfg.threads = a.int_or("threads", num_logical_cores())
     cfg.eb_steps = a.int_or("eb-steps", cfg.eb_steps)
     cfg.eb_t_min = a.float_or("eb-t-min", cfg.eb_t_min)
     cfg.eb_t_max = a.float_or("eb-t-max", cfg.eb_t_max)
     cfg.eb_bound = a.float_or("eb-bound", cfg.eb_bound)
     cfg.eb_stability = a.int_or("eb-stability", cfg.eb_stability)
     cfg.eb_confidence = a.float_or("eb-confidence", cfg.eb_confidence)
+    return cfg^
+
+
+def check_device(device: String) raises:
+    """Refuse a device `run` and `logits` do not have."""
+    if device != "cpu" and device != "gpu":
+        raise Error("unknown device: " + device + " (expected cpu or gpu)")
+
+
+def cmd_run(a: Args) raises:
+    var interval: Int
+    try:
+        interval = a.int_or("visual-interval", 1)
+    except:
+        raise Error("--visual-interval needs an integer")
+    if interval < 1:
+        raise Error("--visual-interval must be at least 1")
+    if a.has("visual-interval") and not a.has("visual"):
+        raise Error("--visual-interval needs --visual")
+    var device = a.get_or("device", "cpu")
+    check_device(device)
+    var cfg = gen_config(a)
+    var threads = cfg.threads
     var t0 = perf_counter_ns()
     var g = GGUFFile(a.get("model"))
     check_arch_flags(a, g.architecture())
@@ -763,7 +781,6 @@ def cmd_run(a: Args) raises:
     )
     _ = g^
     var tok_s = Float64(perf_counter_ns() - t0) / 1e9
-    var device = a.get_or("device", "cpu")
     var max_tokens = len(prompt) + cfg.gen_length
     if device == "gpu":
         var gm = GpuDiffusionLM(
@@ -779,7 +796,8 @@ def cmd_run(a: Args) raises:
             device,
             "gpu (" + gm.ctx.name() + ")",
         )
-    elif device == "cpu":
+    else:
+        # `check_device` has refused every other value.
         var cm = DiffusionLM(
             a.get("model"),
             threads=threads,
@@ -796,8 +814,76 @@ def cmd_run(a: Args) raises:
             device,
             "cpu   threads: " + String(threads),
         )
-    else:
-        raise Error("unknown device: " + device + " (expected cpu or gpu)")
+
+
+def run_json(
+    arch: String,
+    device: String,
+    cfg: GenConfig,
+    prompt_tokens: Int,
+    res: GenResult,
+    tm: Timings,
+    load_s: Float64,
+    tok_s: Float64,
+    text: String,
+) -> String:
+    """The one line `run --json` prints. Its members come in a fixed order that
+    `bench/run_bench.py` and `bench/quality.py` read by name."""
+    var steps_json = String("[")
+    for i in range(len(res.step_ms)):
+        steps_json += (", " if i else "") + String(res.step_ms[i])
+    steps_json += "]"
+    var fw = Float64(max(tm.forwards, 1))
+    return (
+        "{"
+        + '"runtime": "mojo-dllm", "version": "'
+        + VERSION
+        + '", "arch": "'
+        + arch
+        + '", "device": "'
+        + device
+        + '"'
+        + ', "threads": '
+        + String(cfg.threads)
+        + ', "prompt_tokens": '
+        + String(prompt_tokens)
+        + ', "gen_length": '
+        + String(cfg.gen_length)
+        + ', "steps": '
+        + String(cfg.steps)
+        + sampler_json(arch, cfg)
+        + ', "stopped_early": '
+        + ("true" if res.stopped_early else "false")
+        + ', "forward_passes": '
+        + String(res.forward_passes)
+        + stop_json(res)
+        + ', "load_s": '
+        + String(load_s)
+        + ', "tokenizer_s": '
+        + String(tok_s)
+        + ', "generate_s": '
+        + String(res.seconds)
+        + ', "ms_per_step": '
+        + String(res.seconds * 1000.0 / Float64(max(res.forward_passes, 1)))
+        + ', "forward_ms": '
+        + String(Float64(tm.total_ns) / 1e6 / fw)
+        + ', "gemm_ms_per_forward": '
+        + String(Float64(tm.gemm_ns) / 1e6 / fw)
+        + ', "attention_ms_per_forward": '
+        + String(Float64(tm.attn_ns) / 1e6 / fw)
+        + ', "lm_head_ms_per_forward": '
+        + String(Float64(tm.head_ns) / 1e6 / fw)
+        + ', "peak_rss_bytes": '
+        + peak_rss_json()
+        + ', "step_ms": '
+        + steps_json
+        + ', "tokens": ['
+        + _csv(res.tokens)
+        + "]"
+        + ', "text": '
+        + json_str(text)
+        + "}"
+    )
 
 
 def _run[
@@ -886,59 +972,18 @@ def _run[
         for i in range(len(res.step_ms)):
             print("step", i + 1, ":", res.step_ms[i], "ms")
     if a.has("json"):
-        var steps_json = String("[")
-        for i in range(len(res.step_ms)):
-            steps_json += (", " if i else "") + String(res.step_ms[i])
-        steps_json += "]"
         print(
-            "{"
-            + '"runtime": "mojo-dllm", "version": "'
-            + VERSION
-            + '", "arch": "'
-            + model.config().arch
-            + '", "device": "'
-            + device
-            + '"'
-            + ', "threads": '
-            + String(cfg.threads)
-            + ', "prompt_tokens": '
-            + String(len(prompt))
-            + ', "gen_length": '
-            + String(cfg.gen_length)
-            + ', "steps": '
-            + String(cfg.steps)
-            + sampler_json(model.config().arch, cfg)
-            + ', "stopped_early": '
-            + ("true" if res.stopped_early else "false")
-            + ', "forward_passes": '
-            + String(res.forward_passes)
-            + stop_json(res)
-            + ', "load_s": '
-            + String(model.load_time())
-            + ', "tokenizer_s": '
-            + String(tok_s)
-            + ', "generate_s": '
-            + String(res.seconds)
-            + ', "ms_per_step": '
-            + String(res.seconds * 1000.0 / Float64(max(res.forward_passes, 1)))
-            + ', "forward_ms": '
-            + String(Float64(tm.total_ns) / 1e6 / fw)
-            + ', "gemm_ms_per_forward": '
-            + String(Float64(tm.gemm_ns) / 1e6 / fw)
-            + ', "attention_ms_per_forward": '
-            + String(Float64(tm.attn_ns) / 1e6 / fw)
-            + ', "lm_head_ms_per_forward": '
-            + String(Float64(tm.head_ns) / 1e6 / fw)
-            + ', "peak_rss_bytes": '
-            + peak_rss_json()
-            + ', "step_ms": '
-            + steps_json
-            + ', "tokens": ['
-            + _csv(res.tokens)
-            + "]"
-            + ', "text": '
-            + json_str(text)
-            + "}"
+            run_json(
+                model.config().arch,
+                device,
+                cfg,
+                len(prompt),
+                res,
+                tm,
+                model.load_time(),
+                tok_s,
+                text,
+            )
         )
         return
     if prints_answer(a.has("visual"), is_tty):

@@ -7,7 +7,7 @@ from cli.args import Args, env_flags
 from mojo_dllm.diffusion.sampler import GenConfig, GenResult
 from mojo_dllm.formats.gguf import GGUFFile
 from mojo_dllm.models.diffusion_gemma import DiffusionGemma
-from mojo_dllm.models.transformer import DiffusionLM
+from mojo_dllm.models.transformer import DiffusionLM, Timings
 from mojo_dllm.sys.mem import Bytes, F32Ptr, Floats
 from mojo_dllm.sys.mmap import Mapping
 from mojo_dllm.tokenizer.bpe import Tokenizer
@@ -24,8 +24,12 @@ from main import (
     inspect_text,
     check_tokenizer_matches_model,
     check_context_length,
+    check_device,
+    cmd_logits,
     cmd_run,
     cmd_tokenize,
+    gen_config,
+    run_json,
     json_str,
     _csv,
     _logits_gemma,
@@ -1859,6 +1863,270 @@ def test_the_logits_command_refuses_the_gpu_for_diffusion_gemma() raises:
         remove(path)
     assert_equal(execute(_logits_args(_csv(rows), path, "gpu")), 1)
     assert_true(not exists(path))
+
+
+# ---- the run flags reach the sampler (#228) ---------------------------------
+
+
+def _run_args(argv: List[String]) raises -> Args:
+    var spec = command_spec("run")
+    return Args(argv, spec.values, spec.booleans)
+
+
+def test_gen_config_maps_every_run_flag_to_its_field() raises:
+    # Every flag gets a value that differs from its default and from every
+    # other flag's value, so a swap of two fields in the mapping shows.
+    var a = _run_args(
+        [
+            "x",
+            "run",
+            "--max-tokens",
+            "24",
+            "--steps",
+            "12",
+            "--block-length",
+            "6",
+            "--seed",
+            "7",
+            "--temperature",
+            "0.5",
+            "--remasking",
+            "random",
+            "--threshold",
+            "0.9",
+            "--full-logits",
+            "--dual-cache",
+            "--threads",
+            "3",
+            "--eb-steps",
+            "10",
+            "--eb-t-min",
+            "0.3",
+            "--eb-t-max",
+            "0.7",
+            "--eb-bound",
+            "0.2",
+            "--eb-stability",
+            "2",
+            "--eb-confidence",
+            "0.01",
+        ]
+    )
+    var c = gen_config(a)
+    assert_equal(c.gen_length, 24)
+    assert_equal(c.steps, 12)
+    assert_equal(c.block_length, 6)
+    assert_equal(c.seed, 7)
+    assert_equal(c.temperature, 0.5)
+    assert_equal(c.remasking, "random")
+    assert_equal(c.threshold, 0.9)
+    assert_true(c.full_logits)
+    assert_true(c.dual_cache)
+    assert_equal(c.threads, 3)
+    assert_equal(c.eb_steps, 10)
+    assert_equal(c.eb_t_min, 0.3)
+    assert_equal(c.eb_t_max, 0.7)
+    assert_equal(c.eb_bound, 0.2)
+    assert_equal(c.eb_stability, 2)
+    assert_equal(c.eb_confidence, 0.01)
+
+
+def test_gen_config_reads_each_boolean_flag_on_its_own() raises:
+    # Given together, two flags cannot tell a field that reads the other's.
+    var full = gen_config(_run_args(["x", "run", "--full-logits"]))
+    assert_true(full.full_logits and not full.dual_cache)
+    var dual = gen_config(_run_args(["x", "run", "--dual-cache"]))
+    assert_true(dual.dual_cache and not dual.full_logits)
+
+
+def test_gen_config_defaults() raises:
+    var d = GenConfig()
+    var c = gen_config(_run_args(["x", "run", "--threads", "2"]))
+    assert_equal(c.gen_length, 128)
+    assert_equal(c.steps, 128)
+    assert_equal(c.block_length, 32)
+    assert_equal(c.seed, 42)
+    assert_equal(c.temperature, 0.0)
+    assert_equal(c.remasking, "low_confidence")
+    assert_equal(c.threshold, 0.0)
+    assert_true(not c.full_logits)
+    assert_true(not c.dual_cache)
+    assert_equal(c.eb_steps, d.eb_steps)
+    assert_equal(c.eb_t_min, d.eb_t_min)
+    assert_equal(c.eb_t_max, d.eb_t_max)
+    assert_equal(c.eb_bound, d.eb_bound)
+    assert_equal(c.eb_stability, d.eb_stability)
+    assert_equal(c.eb_confidence, d.eb_confidence)
+
+
+def test_gen_config_derives_steps_and_block_length_from_max_tokens() raises:
+    var short = gen_config(
+        _run_args(["x", "run", "--max-tokens", "16", "--threads", "2"])
+    )
+    assert_equal(short.steps, 16)
+    assert_equal(short.block_length, 16)
+    var long = gen_config(
+        _run_args(["x", "run", "--max-tokens", "100", "--threads", "2"])
+    )
+    assert_equal(long.steps, 100)
+    assert_equal(long.block_length, 32)
+    var given = gen_config(
+        _run_args(
+            [
+                "x",
+                "run",
+                "--max-tokens",
+                "100",
+                "--steps",
+                "10",
+                "--threads",
+                "2",
+            ]
+        )
+    )
+    assert_equal(given.steps, 10)
+    assert_equal(given.block_length, 32)
+
+
+def test_run_refuses_a_bad_visual_interval_before_it_loads_anything() raises:
+    with assert_raises(contains="--visual-interval needs an integer"):
+        cmd_run(_run_args(["x", "run", "--visual-interval", "x", "--visual"]))
+    with assert_raises(contains="--visual-interval must be at least 1"):
+        cmd_run(_run_args(["x", "run", "--visual-interval", "0", "--visual"]))
+    with assert_raises(contains="--visual-interval needs --visual"):
+        cmd_run(_run_args(["x", "run", "--visual-interval", "3"]))
+
+
+def test_run_refuses_an_unknown_device_before_it_loads_anything() raises:
+    # `check_args` refuses a bad --device first on the command line; this is
+    # the command's own check, reached with no model to load.
+    with assert_raises(contains="unknown device: tpu (expected cpu or gpu)"):
+        cmd_run(_run_args(["x", "run", "--device", "tpu"]))
+    with assert_raises(contains="unknown device: tpu (expected cpu or gpu)"):
+        check_device("tpu")
+    check_device("cpu")
+    check_device("gpu")
+
+
+def test_logits_refuses_an_unknown_device() raises:
+    var spec = command_spec("logits")
+    var a = Args(
+        [
+            "x",
+            "logits",
+            "--model",
+            "tests/fixtures/tiny-llada.gguf",
+            "--tokens",
+            "1,2",
+            "--rows",
+            "0",
+            "--out",
+            "build/never-written.f32",
+            "--device",
+            "tpu",
+        ],
+        spec.values,
+        spec.booleans,
+    )
+    with assert_raises(contains="unknown device: tpu (expected cpu or gpu)"):
+        cmd_logits(a)
+    assert_true(not exists("build/never-written.f32"))
+
+
+def _json_keys(s: String) -> List[String]:
+    """The keys of the top-level object of `s`, in order of appearance."""
+    var keys = List[String]()
+    var depth = 0
+    var in_string = False
+    var escaped = False
+    var current = String("")
+    var last_string = String("")
+    var after_string = False
+    for ch in s.codepoints():
+        var c = String(ch)
+        if in_string:
+            if escaped:
+                escaped = False
+                current += c
+            elif c == "\\":
+                escaped = True
+                current += c
+            elif c == '"':
+                in_string = False
+                last_string = current
+                after_string = True
+            else:
+                current += c
+            continue
+        if c == '"':
+            in_string = True
+            current = String("")
+            continue
+        if c == ":" and after_string and depth == 1:
+            keys.append(last_string)
+        after_string = False
+        if c == "{" or c == "[":
+            depth += 1
+        elif c == "}" or c == "]":
+            depth -= 1
+    return keys^
+
+
+def _expected_keys(arch: String) -> List[String]:
+    var keys: List[String] = ["runtime", "version", "arch", "device", "threads"]
+    keys.append("prompt_tokens")
+    keys.append("gen_length")
+    keys.append("steps")
+    keys.append("remasking")
+    if arch != "dream":
+        keys.append("block_length")
+        keys.append("full_logits")
+    for k in [
+        "stopped_early",
+        "forward_passes",
+        "steps_taken",
+        "stop_reason",
+        "load_s",
+        "tokenizer_s",
+        "generate_s",
+        "ms_per_step",
+        "forward_ms",
+        "gemm_ms_per_forward",
+        "attention_ms_per_forward",
+        "lm_head_ms_per_forward",
+        "peak_rss_bytes",
+        "step_ms",
+        "tokens",
+        "text",
+    ]:
+        keys.append(String(k))
+    return keys^
+
+
+def _check_json_keys(arch: String) raises:
+    var cfg = GenConfig()
+    cfg.threads = 2
+    var res = GenResult()
+    res.tokens = [1, 2, 3]
+    res.step_ms = [1.5, 2.5]
+    res.forward_passes = 2
+    var line = run_json(
+        arch, "cpu", cfg, 1, res, Timings(), 0.25, 0.125, 'a "quoted" {text}'
+    )
+    var got = _json_keys(line)
+    var want = _expected_keys(arch)
+    assert_equal(len(got), len(want), arch + ": " + line)
+    for i in range(len(want)):
+        assert_equal(got[i], want[i], arch + " key " + String(i))
+    assert_true(line.startswith("{") and line.endswith("}"))
+
+
+def test_run_json_has_every_key_once_in_order_llada() raises:
+    _check_json_keys("llada")
+
+
+def test_run_json_has_every_key_once_in_order_dream() raises:
+    _check_json_keys("dream")
 
 
 def main() raises:
