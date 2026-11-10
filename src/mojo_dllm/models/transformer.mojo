@@ -762,18 +762,22 @@ struct Layer(Movable):
         )
 
 
-def _load_vector(g: GGUFFile, name: String, n: Int) raises -> Floats:
+def expect_vector(g: GGUFFile, name: String, n: Int) raises -> TensorInfo:
+    """The tensor `name`, refused unless it holds `n` elements. The one shape
+    check of every loader, CPU and GPU."""
     var t = g.tensor(name)
     if t.n_elements() != n:
         raise Error("tensor shape mismatch for " + name + ": " + t.shape_str())
-    var v = Floats(n)
-    dequant_row(t.ggml_type, g.data_addr(t), v.ptr(), n)
-    return v^
+    return t^
 
 
-def _load_matrix(
-    g: GGUFFile, name: String, rows: Int, cols: Int, threads: Int
-) raises -> PackedMatrix:
+def expect_matrix(
+    g: GGUFFile, name: String, rows: Int, cols: Int
+) raises -> TensorInfo:
+    """The tensor `name`, refused unless it is a [rows, cols] matrix (`cols`
+    wide, `rows` rows). Each loader adds its own type policy: the dense CPU and
+    GPU models demand a type with a GPU kernel (`check_matrix_type`), and
+    DiffusionGemma, which runs on the CPU only, takes Q5_0 and Q8_0 too."""
     var t = g.tensor(name)
     if t.ne0 != cols or t.n_rows() != rows:
         raise Error(
@@ -787,6 +791,63 @@ def _load_matrix(
             + String(rows)
             + "]"
         )
+    return t^
+
+
+def check_window(
+    n_tokens: Int,
+    max_tokens: Int,
+    lo: Int,
+    hi: Int,
+    out_rows: List[Int],
+    kv_cache: Bool,
+    cache_tokens: Int,
+) raises:
+    """The guards of `forward_window`, shared by the CPU and the GPU model: the
+    input fits the runtime limit, [lo, hi) is a non-empty range inside it, a
+    partial window has a cache that holds this canvas, and `out_rows` is a
+    non-empty ascending list of positions inside the window."""
+    var n_out = len(out_rows)
+    if n_tokens > max_tokens:
+        raise Error(
+            "input of "
+            + String(n_tokens)
+            + " tokens exceeds the runtime limit of "
+            + String(max_tokens)
+        )
+    if lo < 0 or hi > n_tokens or lo >= hi:
+        raise Error("forward window must be a non-empty range inside the input")
+    var full = lo == 0 and hi == n_tokens
+    if not full and not kv_cache:
+        raise Error("a partial forward window needs the K/V cache")
+    if not full and cache_tokens != n_tokens:
+        raise Error(
+            "the K/V cache does not hold this canvas; run a full pass first"
+        )
+    if n_out == 0:
+        raise Error("forward called with no output rows")
+    for j in range(n_out):
+        if (
+            out_rows[j] < lo
+            or out_rows[j] >= hi
+            or (j > 0 and out_rows[j] <= out_rows[j - 1])
+        ):
+            raise Error(
+                "output rows must be ascending positions inside the window"
+            )
+
+
+def _load_vector(g: GGUFFile, name: String, n: Int) raises -> Floats:
+    var t = expect_vector(g, name, n)
+    var v = Floats(n)
+    dequant_row(t.ggml_type, g.data_addr(t), v.ptr(), n)
+    return v^
+
+
+def _load_matrix(
+    g: GGUFFile, name: String, rows: Int, cols: Int, threads: Int
+) raises -> PackedMatrix:
+    var t = expect_matrix(g, name, rows, cols)
     check_matrix_type(t)
     g.map.populate(t.data_offset, t.n_bytes)
     var pm = PackedMatrix(
@@ -1028,35 +1089,15 @@ struct DiffusionLM(DenoisingModel, Movable):
         var c = self.cfg
         var L = len(tokens)
         var n_out = len(out_rows)
-        if L > self.max_tokens:
-            raise Error(
-                "input of "
-                + String(L)
-                + " tokens exceeds the runtime limit of "
-                + String(self.max_tokens)
-            )
-        if lo < 0 or hi > L or lo >= hi:
-            raise Error(
-                "forward window must be a non-empty range inside the input"
-            )
-        var full = lo == 0 and hi == L
-        if not full and not self.kv_cache:
-            raise Error("a partial forward window needs the K/V cache")
-        if not full and self.cache_tokens != L:
-            raise Error(
-                "the K/V cache does not hold this canvas; run a full pass first"
-            )
-        if n_out == 0:
-            raise Error("forward called with no output rows")
-        for j in range(n_out):
-            if (
-                out_rows[j] < lo
-                or out_rows[j] >= hi
-                or (j > 0 and out_rows[j] <= out_rows[j - 1])
-            ):
-                raise Error(
-                    "output rows must be ascending positions inside the window"
-                )
+        check_window(
+            L,
+            self.max_tokens,
+            lo,
+            hi,
+            out_rows,
+            self.kv_cache,
+            self.cache_tokens,
+        )
         # The cache holds no canvas until this pass completes: one that raises
         # past here may already have overwritten some of its rows.
         if self.kv_cache:

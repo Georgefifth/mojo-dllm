@@ -30,6 +30,7 @@ from mojo_dllm.kernels.qgemm import QActs, quantize_acts
 from mojo_dllm.kernels.softembed import EmbeddingT, soft_embed, softmax_rows
 from mojo_dllm.models.transformer import (
     ModelConfig,
+    expect_matrix,
     _load_vector,
 )
 from mojo_dllm.quant.kquants import check_embedding_type, dequant_row
@@ -78,19 +79,7 @@ def _load_matrix(
     do not have; this model runs on the CPU only, and `PackedMatrix` refuses
     any other type itself.
     """
-    var t = g.tensor(name)
-    if t.ne0 != cols or t.n_rows() != rows:
-        raise Error(
-            "tensor shape mismatch for "
-            + name
-            + ": "
-            + t.shape_str()
-            + ", expected ["
-            + String(cols)
-            + ", "
-            + String(rows)
-            + "]"
-        )
+    var t = expect_matrix(g, name, rows, cols)
     g.map.populate(t.data_offset, t.n_bytes)
     var pm = PackedMatrix(
         g.data_addr(t), t.n_bytes, t.ggml_type, rows, cols, threads
