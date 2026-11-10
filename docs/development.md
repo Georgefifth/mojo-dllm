@@ -33,7 +33,7 @@ machine with a GPU, the GPU tests that CI only builds:
 | eval self-test | `uv run --no-project python bench/eval_gsm8k.py --self-test` | answer extraction or the paired statistics break, or `gsm8k-200.jsonl` is not 200 rows with numeric answers |
 | checker self-test | `uv run --frozen --only-group fixtures python scripts/check_weights.py --self-test` | a safetensors or index guard in `check_weights.py` stops rejecting its case, or stops naming it |
 | no GPU | `scripts/check_no_gpu.sh` | `--device gpu` without a GPU does anything but exit 1 with a message |
-| visual options | `scripts/check_visual.sh` | an invalid `--visual-interval` does not exit 1 with a message naming the flag before model loading |
+| visual options | `scripts/check_visual.sh` | an invalid `--visual-interval` does not exit 1, or `--json` with `--visual` does not exit 2, with a message naming the flag before model loading |
 | GPU tests | `scripts/run-gpu-tests.sh` (local only) | a GPU kernel or the GPU forward pass disagrees with the CPU or the f32 reference, or the count differs from `tests/gpu/test-count.txt` |
 
 GitHub's runners have no GPU, so CI builds the GPU suite without running it.

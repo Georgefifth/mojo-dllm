@@ -155,8 +155,8 @@ def test_registry_holds_llamacpp_and_it_satisfies_the_protocol() -> None:
 
 def test_unknown_engine_names_the_known_ones() -> None:
     with pytest.raises(SystemExit) as e:
-        engines.get("vllm")
-    assert "vllm" in str(e.value) and "llamacpp" in str(e.value)
+        engines.get("nosuchengine")
+    assert "nosuchengine" in str(e.value) and "llamacpp" in str(e.value) and "vllm" in str(e.value)
 
 
 # a run

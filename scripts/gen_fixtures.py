@@ -371,6 +371,8 @@ def malformed() -> None:
     assert int(array.parts[3][0]) == 5  # int32 elements
     patch("key-length", int(scalar.offset), 8, 1 << 20, len("general.architecture"))
     patch("key-length-negative", int(scalar.offset), 8, 1 << 63, len("general.architecture"))
+    # A length just under 2^63: the read position plus the length wraps negative (#194).
+    patch("key-length-int64max", int(scalar.offset), 8, 0x7FFFFFFFFFFFFFF0, len("general.architecture"))
     patch("scalar-type", part_offset(scalar, 2), 4, 99, 8)
     patch("array-type", part_offset(array, 3), 4, 99, 5)
     patch("nested-array", part_offset(array, 3), 4, 9, 5)
@@ -420,6 +422,112 @@ def malformed() -> None:
     (out / "tensor-cut.gguf").write_bytes(base[:cut])
     # Valid empty directory: the last uint64 read ends exactly at EOF, no padding.
     (out / "exact-eof.gguf").write_bytes(b"GGUF" + (3).to_bytes(4, "little") + bytes(16))
+    tensor_directory_cases(out)
+
+
+GGML_F32, GGML_Q8_0, GGML_Q4_K, GGML_IQ2_XXS = 0, 8, 12, 16
+GGUF_STRING, GGUF_UINT32 = 8, 4
+
+
+def raw_gguf(tensors, kvs=(), data=b"", alignment=32) -> bytes:
+    """A GGUF v3 file written field by field, for directories that GGUFWriter cannot produce: dimensions and
+    offsets that are absurd or negative as an Int, and repeated names. `tensors` holds (name, dims, ggml type,
+    offset) and `kvs` holds (key, GGUF value type, payload bytes); the directory is followed by padding to
+    `alignment` and `data`."""
+
+    def string(text: str | bytes) -> bytes:
+        raw = text if isinstance(text, bytes) else text.encode()
+        return len(raw).to_bytes(8, "little") + raw
+
+    out = bytearray(b"GGUF" + (3).to_bytes(4, "little"))
+    out += len(tensors).to_bytes(8, "little") + len(kvs).to_bytes(8, "little")
+    for key, kind, payload in kvs:
+        out += string(key) + kind.to_bytes(4, "little") + payload
+    for name, dims, ggml_type, offset in tensors:
+        out += string(name) + len(dims).to_bytes(4, "little")
+        for dim in dims:
+            out += dim.to_bytes(8, "little")
+        out += ggml_type.to_bytes(4, "little") + offset.to_bytes(8, "little")
+    out += bytes(-len(out) % alignment)
+    return bytes(out + data)
+
+
+def string_array_payload(items: list[bytes]) -> bytes:
+    """The payload of a GGUF array of strings: element type, count, then each string with its length."""
+    out = bytearray(GGUF_STRING.to_bytes(4, "little") + len(items).to_bytes(8, "little"))
+    for item in items:
+        out += len(item).to_bytes(8, "little") + item
+    return bytes(out)
+
+
+def string_cases(out: pathlib.Path) -> None:
+    """GGUF strings that are not valid UTF-8, in a key, a value, a token text and a tensor name (#225), and a
+    control with strings of every width. The lone byte is 0xE9, a Latin-1 e acute: it begins a three-byte sequence
+    that the next byte does not complete."""
+    arch = ("general.architecture", GGUF_STRING, (4).to_bytes(8, "little") + b"test")
+    f32 = ("f32", [8], GGML_F32, 0)
+    data = np.arange(8, dtype="<f4").tobytes()
+    tokens = "tokenizer.ggml.tokens"
+    bad = b"caf\xe9"
+
+    def text(value: bytes) -> bytes:
+        return len(value).to_bytes(8, "little") + value
+
+    def write(name: str, tensors=(f32,), kvs=(arch,)) -> None:
+        (out / (name + ".gguf")).write_bytes(raw_gguf(tensors, kvs, data))
+
+    # The first entry is the architecture, so the bad key is entry 1 and its bytes start at file offset 76.
+    write("string-invalid-key", kvs=(arch, (bad, GGUF_STRING, text(b"x"))))
+    write("string-invalid-value", kvs=(arch, ("test.str", GGUF_STRING, text(bad)),
+                                       (tokens, 9, string_array_payload([b"a", b"b", b"c"]))))
+    write("string-invalid-token", kvs=(arch, (tokens, 9, string_array_payload([b"a", b"b" + bad, b"c"]))))
+    write("string-invalid-tensor-name", tensors=((b"w\xe9ight", [8], GGML_F32, 0),))
+    # Valid strings of one, two, three and four bytes per character, in the same four places.
+    wide = "a \u00e9 \u20ac \U0001f600"
+    write("string-valid", tensors=((wide, [8], GGML_F32, 0),),
+          kvs=(arch, (wide, GGUF_STRING, text(wide.encode())), ("test.str", GGUF_STRING, text(wide.encode())),
+               (tokens, 9, string_array_payload([wide.encode(), "\u00e9".encode(), b"c"]))))
+
+
+def tensor_directory_cases(out: pathlib.Path) -> None:
+    """One file per refusal of the tensor directory (#195), each differing from `tensors-control` in one field."""
+    arch = ("general.architecture", GGUF_STRING, (4).to_bytes(8, "little") + b"test")
+    f32_data = np.arange(8, dtype="<f4").tobytes()  # the 32 bytes of an F32 tensor of 8 elements
+    f32 = ("f32", [8], GGML_F32, 0)
+
+    def write(name: str, tensors, data=f32_data, kvs=(arch,)) -> None:
+        (out / (name + ".gguf")).write_bytes(raw_gguf(tensors, kvs, data))
+
+    # The control is read back by the reference reader, so a refusal below cannot come from a bad writer.
+    write("tensors-control", [f32])
+    control = out / "tensors-control.gguf"
+    ref = GGUFReader(str(control))
+    assert [t.name for t in ref.tensors] == ["f32"] and ref.tensors[0].data.tolist() == list(range(8))
+    assert ref.alignment == 32 and ref.data_offset % 32 == 0
+
+    # Offsets. The values are chosen so that each guard is the only thing that refuses its file: -32 is a
+    # multiple of the alignment and lands inside the file, 2^63 - 32 is a multiple of it too.
+    write("tensor-offset-negative", [("f32", [8], GGML_F32, (1 << 64) - 32)])
+    write("tensor-offset-int64max", [("f32", [8], GGML_F32, (1 << 63) - 32)])
+    write("tensor-offset-unaligned", [("f32", [8], GGML_F32, 16)])
+    # Dimensions and byte counts.
+    write("tensor-dim-zero", [("f32", [8, 0], GGML_F32, 0)])
+    write("tensor-dim-negative", [("f32", [8, 1 << 63], GGML_F32, 0)])
+    write("tensor-dim-wraps", [("q4k", [4096, 1 << 61], GGML_Q4_K, 0)])  # 2304 bytes per row x 2^61 = 0 mod 2^64
+    # The sizes wrap to 32 bytes, the data the file holds, so a check that multiplies first accepts them.
+    write("tensor-bytes-wrap", [("f32", [(1 << 62) + 8], GGML_F32, 0)])  # 4 bytes x (2^62 + 8) = 32 mod 2^64
+    write("tensor-rows-wrap", [("f32", [2, (1 << 61) + 4], GGML_F32, 0)])  # 8 bytes x (2^61 + 4) rows = 32 mod 2^64
+    write("tensor-row-partial-block", [("q8", [16, 2], GGML_Q8_0, 0)], data=bytes(68))  # 16 of 32 per block
+    # A type this reader cannot decode stays listed, with no byte count, but its offset is still checked.
+    iq2 = bytes(66)
+    write("tensor-unsupported-type", [("iq2", [256], GGML_IQ2_XXS, 0)], data=iq2)
+    write("tensor-unsupported-past-end", [("iq2", [256], GGML_IQ2_XXS, 1 << 20)], data=iq2)
+    # Repeats: the first of two equal names or keys used to win without a word.
+    write("tensor-name-duplicate", [f32, ("f32", [8], GGML_F32, 32)], data=f32_data * 2)
+    two = (1).to_bytes(4, "little")
+    write("kv-key-duplicate", [f32], kvs=(arch, ("test.value", GGUF_UINT32, two), ("test.value", GGUF_UINT32, two)))
+    write("kv-keys-distinct", [f32], kvs=(arch, ("test.value", GGUF_UINT32, two), ("test.other", GGUF_UINT32, two)))
+    string_cases(out)
 
 
 def dequant_types() -> None:
@@ -467,6 +575,10 @@ def metadata_cases() -> None:
                 w.add_string(key, value)
             elif isinstance(value, float):
                 w.add_float32(key, value)
+            elif isinstance(value, bool):
+                w.add_bool(key, value)
+            elif value < 0:
+                w.add_int32(key, value)
             else:
                 w.add_uint32(key, value)
         w.write_header_to_file()
@@ -485,11 +597,63 @@ def metadata_cases() -> None:
     write("rope-width-type", {"llada.rope.dimension_count": "128"})
     write("rope-factor-type", {"llada.rope.scaling.factor": "1.0"})
     write("defaults")
+    # Every optional key that has a default is set, so `inspect` lists none (#204).
+    write("keys-set", {"llada.attention.head_count_kv": 4, "llada.context_length": 4096,
+                       "llada.rope.freq_base": 500000.0, "diffusion.shift_logits": False})
+    # Hyperparameters that are zero, negative or not finite (#199), one file per key, named as the
+    # DiffusionGemma ones are.
+    for key in ("llada.block_count", "llada.embedding_length", "llada.attention.head_count",
+                "llada.attention.head_count_kv", "llada.feed_forward_length", "llada.vocab_size"):
+        write("zero-" + key, {key: 0})
+    write("negative-llada.attention.head_count", {"llada.attention.head_count": -2})
+    write("negative-llada.attention.head_count_kv", {"llada.attention.head_count_kv": -1})
+    for key in ("llada.attention.layer_norm_rms_epsilon", "llada.rope.freq_base"):
+        for label, value in (("zero", 0.0), ("negative", -1e-5), ("nan", float("nan")), ("inf", float("inf"))):
+            write(f"{label}-{key}", {key: value})
     for kind in ("none", "linear"):
         write("compatible-" + kind, {"llada.rope.dimension_count": 128,
                                     "llada.attention.key_length": 128,
                                     "llada.rope.scaling.type": kind,
                                     "llada.rope.scaling.factor": 1.0})
+
+
+def llada_shape_cases() -> None:
+    """LLaDA files whose token_embd or output tensor disagrees with the vocabulary or the hidden size (#198).
+
+    Hidden size 256, vocabulary 8, one layer; the two tensors hold zero Q4_K blocks and no layer tensors follow,
+    because the check must refuse the file before any loader asks for one.
+    """
+    out = OUT / "metadata"
+    out.mkdir(parents=True, exist_ok=True)
+
+    def write(name: str, embd: tuple[int, int], output: tuple[int, int] | None, vocab_key: bool = True) -> None:
+        w = GGUFWriter(str(out / (name + ".gguf")), "llada")
+        w.add_uint32("llada.block_count", 1)
+        w.add_uint32("llada.embedding_length", 256)
+        w.add_uint32("llada.attention.head_count", 2)
+        w.add_uint32("llada.feed_forward_length", 256)
+        w.add_float32("llada.attention.layer_norm_rms_epsilon", 1e-5)
+        w.add_uint32("tokenizer.ggml.mask_token_id", 7)
+        if vocab_key:
+            w.add_uint32("llada.vocab_size", 8)
+        for tensor, shape in (("token_embd.weight", embd), ("output.weight", output)):
+            if shape is None:
+                continue
+            width, rows = shape
+            raw = np.zeros((rows, width // QK_K * Q4K_BYTES), dtype=np.uint8)
+            w.add_tensor(tensor, raw, raw_shape=raw.shape, raw_dtype=Q.Q4_K)
+        w.write_header_to_file()
+        w.write_kv_data_to_file()
+        w.write_tensors_to_file()
+        w.close()
+
+    write("shapes-valid", (256, 8), (256, 8))
+    write("embd-rows-short", (256, 6), (256, 8))
+    write("embd-rows-long", (256, 10), (256, 8))
+    write("output-rows-short", (256, 8), (256, 6))
+    write("embd-width", (512, 8), (256, 8))
+    write("vocab-from-output", (256, 6), (256, 8), vocab_key=False)
+    write("output-absent", (256, 8), None)
 
 
 GEMMA_ARCH = "diffusion-gemma"
@@ -637,7 +801,8 @@ def write_gemma(
     """One diffusion-gemma file. `keys` replaces metadata values and `drop` removes keys; `shapes` and `types`
     replace tensor shapes and GGML types, `omit` removes tensors and `add` adds (name -> (shape, type)).
     `tensors` is "full" (every
-    tensor of the real file, random weights), "thin" (what the reader looks at, zero bytes) or "none"."""
+    tensor of the real file, random weights), "zeros" (every tensor, zero bytes: enough for the constructor's
+    refusals, and git stores it for nothing), "thin" (what the reader looks at, zero bytes) or "none"."""
     c = c or GEMMA
     meta = {**gemma_keys(c), **(keys or {})}
     for key in drop:
@@ -658,7 +823,7 @@ def write_gemma(
         else:
             assert kind in ("i32[]", "bool[]", "f32[]", "str[]"), kind
             w.add_array(key, value)
-    spec = {} if tensors == "none" else gemma_tensors(c, tensors == "full")
+    spec = {} if tensors == "none" else gemma_tensors(c, tensors in ("full", "zeros"))
     for name, shape in (shapes or {}).items():
         assert name in spec, name
         spec[name] = (shape, spec[name][1])
@@ -758,7 +923,29 @@ def diffusion_gemma() -> None:
         types={"blk.0.ffn_down_exps.weight": "F32"},  # one expert row of 1 is no Q5_0 block
     )
     # Files with one kind of layer pass: no rope table without a global layer, no attn_v without a sliding one.
+    # Self-conditioning decodes the embedding table in groups of 8 rows (#227).
+    gate = {"self_cond_gate.weight": ((GEMMA["hidden"], GEMMA["ffn"]), "Q4_K")}
+    write_gemma(out / "vocab-500-self-cond.gguf", c={**GEMMA, "vocab": 500}, add=gate)
+    write_gemma(out / "vocab-504-self-cond.gguf", c={**GEMMA, "vocab": 504}, add=gate)
+    write_gemma(out / "vocab-500-no-self-cond.gguf", c={**GEMMA, "vocab": 500})
     write_gemma(out / "all-sliding.gguf", c={**GEMMA, "sliding": [True, True], "kv": [4, 4]})
+
+    # The constructor's own refusals (#209): every tensor is present and the config accepts the file, so the
+    # error comes from a loader or from the block-size check. Zero bytes are enough, the loaders read no weights.
+    zeros = {"tensors": "zeros"}
+    h = GEMMA["hidden"]
+    write_gemma(out / "load-attn-q-q5_0.gguf", types={"blk.0.attn_q.weight": "Q5_0"}, **zeros)
+    write_gemma(out / "load-attn-q-shrunk.gguf", shapes={"blk.0.attn_q.weight": (h, 256)}, **zeros)
+    write_gemma(out / "load-attn-norm-short.gguf", shapes={"blk.0.attn_norm.weight": (h // 2,)}, **zeros)
+    write_gemma(out / "load-attn-output-narrow.gguf", shapes={"blk.1.attn_output.weight": (256, h)}, **zeros)
+    write_gemma(out / "load-ffn-down-q4_k.gguf", types={"blk.0.ffn_down.weight": "Q4_K"}, **zeros)
+    write_gemma(out / "load-experts-gate-up-q5_0.gguf", types={"blk.1.ffn_gate_up_exps.weight": "Q5_0"}, **zeros)
+    write_gemma(out / "load-self-cond-gate-q5_0.gguf", types={"self_cond_gate.weight": "Q5_0"}, **zeros)
+    write_gemma(out / "load-self-cond-up-q5_0.gguf", types={"self_cond_up.weight": "Q5_0"}, **zeros)
+    write_gemma(out / "load-no-self-cond.gguf", omit=("self_cond_pre_norm.weight", "self_cond_gate.weight", "self_cond_up.weight", "self_cond_down.weight"), **zeros)
+    write_gemma(out / "load-self-cond-down-q4_k.gguf", types={"self_cond_down.weight": "Q4_K"}, **zeros)
+    write_gemma(out / "load-self-cond-up-short.gguf", shapes={"self_cond_up.weight": (h, 256)}, **zeros)
+    write_gemma(out / "load-output-norm-short.gguf", shapes={"output_norm.weight": (h // 2,)}, **zeros)
     write_gemma(out / "all-global.gguf", c={**GEMMA, "sliding": [False, False], "kv": [1, 1]})
     h, ex, ef = GEMMA["hidden"], GEMMA["experts"], GEMMA["expert_ffn"]
     tensor_cases: dict[str, dict] = {
@@ -796,6 +983,9 @@ DG_CASES = {
     # Prompt of 9 with self-conditioning: the previous step's logits are those of another canvas over the
     # same prompt, taken one denoising step back at temperature 0.8.
     "p9sc": dict(prompt=9, seed=7, prev_seed=99, prev_temp_inv=1.0 / 0.8),
+    # Self-conditioning with no prompt (the canvas alone) and past the sliding window (#229).
+    "p0sc": dict(prompt=0, seed=9, prev_seed=98, prev_temp_inv=1.0 / 0.8),
+    "p150sc": dict(prompt=150, seed=8, prev_seed=99, prev_temp_inv=1.0 / 0.8),
 }
 
 
@@ -836,6 +1026,8 @@ def main() -> None:
     dequant_types()
     unsupported_embedding()
     metadata_cases()
+    llada_shape_cases()
+    utf8_cases()
     entropy_rows()
     diffusion_gemma()
     gemma4_tiny()
@@ -896,7 +1088,11 @@ def gemma4_tiny() -> None:
         w.add_array("tokenizer.ggml.merges", list(merges))
         special = {"bos": 2, "eos": 1, "unknown": 3, "padding": 0, "mask": 4, **(ids or {})}
         for key, value in special.items():
-            if key not in omit:
+            if key in omit:
+                continue
+            if value < 0:
+                w.add_int32(f"tokenizer.ggml.{key}_token_id", value)
+            else:
                 w.add_uint32(f"tokenizer.ggml.{key}_token_id", value)
         w.add_bool("tokenizer.ggml.add_space_prefix", False)
         w.add_bool("tokenizer.ggml.add_bos_token", add_bos)
@@ -959,6 +1155,13 @@ def gemma4_tiny() -> None:
     # <eos> and <turn|> typed normal (1): llama.cpp overrides them to control because they end generation.
     t, k = with_entries((1, None, 1), (6, None, 1))
     write("forced-control.gguf", add_bos=False, tokens=t, types=k)
+    # A token type outside 0 to 6 (#227), a negative special id other than -1, and -1 written out.
+    t, k = with_entries((plain_start, None, 9))
+    write("unknown-token-type.gguf", add_bos=False, tokens=t, types=k)
+    t, k = with_entries((plain_start, None, -1))
+    write("negative-token-type.gguf", add_bos=False, tokens=t, types=k)
+    write("special-negative.gguf", add_bos=False, ids={"padding": -2})
+    write("special-minus-one.gguf", add_bos=False, ids={"padding": -1})
     # EOS is the end-of-turn token itself: the end-of-generation list must hold its id once.
     write("eos-is-end-of-turn.gguf", add_bos=False, ids={"eos": 6})
     # No <turn|> and no <|tool_response>: nothing for the end-of-generation list to add beyond EOS.
@@ -973,19 +1176,167 @@ def gpt2_tiny() -> None:
     end-of-turn id is -1. The loader maps bytes to code points itself and needs no byte tokens, so six tokens do.
     """
     (OUT / "gpt2-tiny").mkdir(exist_ok=True)
-    w = GGUFWriter(str(OUT / "gpt2-tiny" / "ids.gguf"), "llada")
-    w.add_string("tokenizer.ggml.model", "gpt2")
-    w.add_string("tokenizer.ggml.pre", "qwen2")
-    w.add_array("tokenizer.ggml.tokens", ["a", "b", "<pad>", "<unk>", "<eos>", "ab"])
-    w.add_array("tokenizer.ggml.token_type", [1, 1, 3, 2, 3, 1])
-    w.add_array("tokenizer.ggml.merges", ["a b"])
-    w.add_uint32("tokenizer.ggml.padding_token_id", 2)
-    w.add_uint32("tokenizer.ggml.unknown_token_id", 3)
-    w.add_uint32("tokenizer.ggml.eos_token_id", 4)
-    w.write_header_to_file()
-    w.write_kv_data_to_file()
-    w.write_tensors_to_file()
-    w.close()
+    base_tokens = ["a", "b", "<pad>", "<unk>", "<eos>", "ab"]
+    base_types = [1, 1, 3, 2, 3, 1]
+
+    def write(name, *, tokens=base_tokens, types=base_types, pre="qwen2", ids=None, add_bos=None, model_vocab=None,
+              arch="llada"):
+        w = GGUFWriter(str(OUT / "gpt2-tiny" / name), arch)
+        w.add_string("tokenizer.ggml.model", "gpt2")
+        w.add_string("tokenizer.ggml.pre", pre)
+        w.add_array("tokenizer.ggml.tokens", list(tokens))
+        w.add_array("tokenizer.ggml.token_type", list(types))
+        w.add_array("tokenizer.ggml.merges", ["a b"])
+        special = {"padding": 2, "unknown": 3, "eos": 4, **(ids or {})}
+        for key, value in special.items():
+            if value is None:
+                continue
+            if value < 0:
+                w.add_int32(f"tokenizer.ggml.{key}_token_id", value)
+            else:
+                w.add_uint32(f"tokenizer.ggml.{key}_token_id", value)
+        if add_bos is not None:
+            w.add_bool("tokenizer.ggml.add_bos_token", add_bos)
+        if model_vocab is not None:
+            # The keys ModelConfig needs, so a test can compare the two vocabulary sizes (#200).
+            w.add_uint32("llada.block_count", 1)
+            w.add_uint32("llada.embedding_length", 256)
+            w.add_uint32("llada.attention.head_count", 2)
+            w.add_uint32("llada.feed_forward_length", 256)
+            w.add_float32("llada.attention.layer_norm_rms_epsilon", 1e-5)
+            w.add_uint32("llada.vocab_size", model_vocab)
+            w.add_uint32("tokenizer.ggml.mask_token_id", 5)
+        w.write_header_to_file()
+        w.write_kv_data_to_file()
+        w.write_tensors_to_file()
+        w.close()
+
+    write("ids.gguf")
+    write("short-types.gguf", types=base_types[:-1])
+    write("pre-unknown.gguf", pre="mystery")
+    write("special-out-of-range.gguf", ids={"bos": 99})
+    write("special-negative.gguf", ids={"bos": -5})
+    write("special-minus-one.gguf", ids={"padding": -1})
+    write("duplicate-token.gguf", tokens=["a", "b", "<pad>", "<unk>", "<eos>", "a"])
+    write("no-eos.gguf", ids={"eos": None})
+    write("add-bos-without-id.gguf", add_bos=True)
+    write("with-model.gguf", model_vocab=6)
+    write("other-arch.gguf", arch="qwen2")  # a tokenizer of an architecture with no chat template here (#207)
+    write("with-model-vocab-512.gguf", model_vocab=512)
+
+
+UTF8_CASES = [
+    # (name, bytes). Valid input first, then one case or more for each way a sequence can be wrong.
+    ("empty", b""),
+    ("ascii", b"abc 123"),
+    ("two-byte", "caf\u00e9".encode()),
+    ("three-byte", "\u20ac".encode()),
+    ("four-byte", "\U0001f600".encode()),
+    ("lowest-two-byte", bytes([0xC2, 0x80])),
+    ("highest-two-byte", bytes([0xDF, 0xBF])),
+    ("lowest-three-byte", bytes([0xE0, 0xA0, 0x80])),
+    ("before-surrogates", bytes([0xED, 0x9F, 0xBF])),
+    ("after-surrogates", bytes([0xEE, 0x80, 0x80])),
+    ("highest-three-byte", bytes([0xEF, 0xBF, 0xBF])),
+    ("lowest-four-byte", bytes([0xF0, 0x90, 0x80, 0x80])),
+    ("highest-code-point", bytes([0xF4, 0x8F, 0xBF, 0xBF])),
+    ("latin1-e9", bytes([0x63, 0x61, 0x66, 0xE9, 0x20, 0x61])),  # "caf\xe9 a": the case of issue #197
+    ("latin1-e9-last", b"caf\xe9"),
+    ("stray-continuation-first", bytes([0x80])),
+    ("stray-continuation-middle", bytes([0x61, 0xBF, 0x62])),
+    ("overlong-c0", bytes([0xC0, 0x80])),
+    ("overlong-c1", bytes([0xC1, 0xBF])),
+    ("overlong-three-byte", bytes([0xE0, 0x80, 0x80])),
+    ("overlong-three-byte-high", bytes([0xE0, 0x9F, 0xBF])),
+    ("overlong-four-byte", bytes([0xF0, 0x80, 0x80, 0x80])),
+    ("overlong-four-byte-high", bytes([0xF0, 0x8F, 0xBF, 0xBF])),
+    ("surrogate-low", bytes([0xED, 0xA0, 0x80])),
+    ("surrogate-high", bytes([0xED, 0xBF, 0xBF])),
+    ("above-10ffff", bytes([0xF4, 0x90, 0x80, 0x80])),
+    ("lead-f5", bytes([0xF5, 0x80, 0x80, 0x80])),
+    ("lead-ff", bytes([0xFF])),
+    ("lead-fe-then-ascii", bytes([0xFE, 0x41])),
+    ("two-byte-lead-then-ascii", bytes([0xC3, 0x28])),
+    ("three-byte-then-ascii-second", bytes([0xE2, 0x28, 0xA1])),
+    ("three-byte-then-ascii-third", bytes([0xE2, 0x82, 0x28])),
+    ("four-byte-then-ascii-fourth", bytes([0xF0, 0x9F, 0x98, 0x28])),
+    ("four-byte-then-ascii-third", bytes([0xF0, 0x9F, 0x28, 0x80])),
+    ("lead-then-lead", bytes([0xC3, 0xC3, 0xA9])),
+    ("truncated-two-byte", bytes([0x61, 0xC3])),
+    ("truncated-three-byte", bytes([0xE2, 0x82])),
+    ("truncated-four-byte", bytes([0xF0, 0x9F, 0x98])),
+    ("truncated-three-byte-first-only", bytes([0xE2])),
+    ("two-invalid-in-a-row", bytes([0xE9, 0xE9, 0x61])),
+]
+
+
+def lead_byte_decode(data: bytes) -> list[int]:
+    """What `utf8_decode` must return: llama.cpp's `unicode_cpts_from_utf8` (src/unicode.cpp lines 30 to 75 and 1389
+    to 1404 at 5f490d7), which turns the lead byte of an invalid sequence into U+FFFD and goes on at the next byte,
+    except that a surrogate is also invalid here (llama.cpp's check stops at overlong forms and values above
+    U+10FFFF)."""
+    out: list[int] = []
+    i = 0
+    while i < len(data):
+        c = data[i]
+        need = 0
+        if c < 0x80:
+            out.append(c)
+            i += 1
+            continue
+        if 0xC2 <= c <= 0xDF:
+            need = 1
+        elif 0xE0 <= c <= 0xEF:
+            need = 2
+        elif 0xF0 <= c <= 0xF4:
+            need = 3
+        tail = data[i + 1:i + 1 + need]
+        ok = need > 0 and len(tail) == need and all(0x80 <= t <= 0xBF for t in tail)
+        cp = 0
+        if ok:
+            cp = (c & (0x3F >> need)) if need else c
+            for t in tail:
+                cp = (cp << 6) | (t & 0x3F)
+            ok = cp >= (0x80, 0x800, 0x10000)[need - 1] and cp <= 0x10FFFF and not 0xD800 <= cp <= 0xDFFF
+        if ok:
+            out.append(cp)
+            i += 1 + need
+        else:
+            out.append(0xFFFD)
+            i += 1
+    return out
+
+
+def utf8_cases() -> None:
+    """tests/fixtures/utf8-cases.tsv: byte strings, the code points `utf8_decode` must return, and the offset of
+    the first byte that begins an invalid sequence (-1 when the input is valid).
+
+    Python's own decoder is the check on this table. The first invalid offset is `UnicodeDecodeError.start`. The
+    code points agree with `bytes.decode(errors="replace")` in every case but one kind: a sequence that stops short
+    after a valid prefix (a lead byte and some good continuation bytes), where Python writes one U+FFFD for the
+    whole stretch and the lead-byte rule writes one for each byte."""
+    lines = []
+    differs = []
+    for name, data in UTF8_CASES:
+        expected = lead_byte_decode(data)
+        try:
+            data.decode("utf-8")
+            first = -1
+            assert expected == [ord(ch) for ch in data.decode("utf-8")], name
+        except UnicodeDecodeError as err:
+            first = err.start
+            assert expected[first] == 0xFFFD, name
+        python = [ord(ch) for ch in data.decode("utf-8", errors="replace")]
+        if python != expected:
+            differs.append(name)
+        lines.append("\t".join((name, data.hex() or "-", " ".join(f"{cp:x}" for cp in expected) or "-", str(first))))
+    # The five cases where Python and the lead-byte rule part are the sequences that stop short after a valid
+    # prefix (a lead byte and one or more good continuation bytes): Python writes one U+FFFD for the stretch,
+    # the lead-byte rule one for each byte. No other case parts, so a change in either decoder shows here.
+    assert sorted(differs) == [
+        "four-byte-then-ascii-fourth", "four-byte-then-ascii-third", "three-byte-then-ascii-third", "truncated-four-byte", "truncated-three-byte",
+    ], differs
+    (OUT / "utf8-cases.tsv").write_text("\n".join(lines) + "\n")
 
 
 def entropy_rows() -> None:

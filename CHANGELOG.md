@@ -8,6 +8,43 @@ semantic versioning (0.y: minor bumps may break things).
 
 ### Added
 
+- `bench/engines/sglang.py`, an engine for `bench/eval_engine.py` that answers GSM8K through the OpenAI-compatible
+  endpoint of a running SGLang server (issue #180): `--engine sglang --base-url URL`, with the declared `--dtype`,
+  `--algorithm`, `--checkpoint`, `--max-running-requests` and `--chat-template`. The request has four fields (`model`,
+  one user message, `max_completion_tokens`, `stream` false) and never carries a field that the DiffusionGemma algorithm
+  rejects with HTTP 400 (logprobs, a grammar, a penalty, a seed) or ignores (`temperature`, `top_p`, `top_k`). SGLang
+  has no `/version` route, so the release,
+  the diffusion algorithm, the dtype and the batch size come from `GET /server_info` and the checkpoint from
+  `GET /model_info`. A declared value that contradicts a reported one is refused, a server that runs no diffusion
+  algorithm or reports a quantization is refused, and the batch size must be 1 (reported or declared). The arm's
+  `model` carries the dtype, so `compare --across-weights` sees different weights, and `flags.model_matches_server` is
+  true only when `--model` is the checkpoint the server reports (false for an alias that matches the served name only).
+  `forward_passes` is null in every
+  row: SGLang exposes no per-request step count on `main` or in v0.5.23 (sgl-project/sglang#48675 was open and
+  unmerged on 2026-11-09), and the engine never reads `/metrics`. The model-list and completion checks moved from the
+  vLLM engine into `bench/engines/_openai.py`, unchanged, and both engines use them. The shared HTTP client also
+  strips control characters from, and caps, the text of a connection or transport error, as it does for server text.
+  `docs/benchmarks.md` has the runbook with the cookbook's serve command as read on 2026-11-09, the note that the bf16
+  checkpoint is 48.1 GiB, the Vast.ai API key read into `VAST_API_KEY` instead of passed as an argument (a test scans
+  the fenced blocks of the file for a key in an argument list), and a
+  DiffusionGemma section that lists the llama.cpp reference, vLLM, SGLang and mojo-dllm rows, each marked
+  `no committed run yet`. No server was run and the evaluation on a rented machine has not happened.
+- `bench/engines/vllm.py`, an engine for `bench/eval_engine.py` that answers GSM8K through the OpenAI-compatible
+  endpoint of a running vLLM server (issue #179): `--engine vllm --base-url URL --served-model NAME --quantization Q`
+  (and the declared `--checkpoint`, `--attention-backend`, `--chat-template`). It sends one chat message at
+  temperature 0 and never starts or stops a server. `version` records the release `GET /version` reports plus the
+  declared checkpoint, quantization and attention backend, and the arm's `model` carries the quantization so
+  `compare --across-weights` sees different weights. `forward_passes` is the change of vLLM's
+  `vllm:diffusion_num_denoising_steps` counter (read under that name and under its `_total` exposition name) across
+  one request, null when the server has none, and refused unless `--max-num-seqs 1` is declared, because the counter
+  is server-wide. Server text in errors is stripped of control characters and capped, and the arm's `--model` must
+  equal the server's reported `root` or served name. The
+  run is refused for a served model the server does not list, an HTTP error, an empty completion or a response
+  with no token counts. `flags` says `"server": "remote"`: the isolation checks see only the client machine.
+  `bench/engines/_http.py` is the shared standard-library client (no credentials, no cookies, no redirects, no
+  retries, no environment proxy unless asked, a size bound and one deadline per request). `docs/benchmarks.md` has
+  the runbook (rent, serve, run, destroy) with the recipe page's serve commands as read on 2026-11-09. No server
+  was run and the evaluation on a rented GPU has not happened.
 - `bench/engines/hf.py`, an engine for `bench/eval_engine.py` that runs GSM8K through the authors' own sampling
   code (issue #178): `generate` from a checkout of ML-GSAI/LLaDA (`--llada-repo`, imported and never copied) and
   `diffusion_generate` from Dream's remote code, at temperature 0 with steps equal to the generation length.
@@ -137,6 +174,85 @@ semantic versioning (0.y: minor bumps may break things).
 
 ### Changed
 
+- The transposed embedding table of DiffusionGemma's self-conditioning is no longer zeroed before it is written, and the
+  `soft_embed` partial sums and the CPU attention scores are not zeroed where every element is written first
+  (issue #226). `Floats` takes `zero=False` for that. At the real size (vocabulary 262144, hidden 2816, 256 canvas
+  rows) building the table took 3.5 to 6.2 s before and 1.8 to 2.1 s after in one set of three interleaved runs (one
+  before run overlapped other work), and 2.2 to 2.8 s before and 1.2 to 1.3 s after in a later set on an idle machine
+  (about 1.8 times faster); the peak RSS is unchanged at 3.89 GB and a `soft_embed` call is unchanged within noise
+  (2.0 to 2.1 s). Each 64-row scratch block of the table build is still zeroed. The numbers are bit for bit the same.
+- The CPU MoE router names the token whose router scores are NaN or infinite (`non-finite router scores for token N`,
+  issue #217). Before, every probability of that token was NaN, the selection picked expert 0 for every slot, and
+  `grouped_experts` reported "MoE routing repeats expert 0", which hides the cause. `Routing` also keeps its capacity
+  apart from the number of tokens in use: `set_len` refuses a length above the capacity, and `route_tokens` refuses a
+  count the buffers cannot hold before it writes any id.
+- `logits --prev-temp-inv` for DiffusionGemma refuses a value whose product with the final logit soft cap exceeds
+  1e8 (issue #229). The old bound, 3e38, accepted values that turned the whole canvas to NaN without an error: the
+  softmax subtracts the maximum from an unrounded product, and from about 1e9 (cap 30) the leftover residue makes the
+  exponential infinite. Measured on 64 rows of logits in [-30, 30] at the real vocabulary width of 262144: NaN in 61 of 64 rows at 1e9 and in
+  none up to 1e8. The onset depends on the row width: at width 4096, 21 of 64 rows are NaN at 1e8.
+  With the real cap of 30 the largest accepted value is about 3e6, a temperature of 3e-7.
+- Mapping a model file names the operating system's reason when it fails (issue #224). A failing `lseek` is no longer
+  reported as "file is empty or unreadable" (an empty file now says `file is empty: PATH`; a size that cannot be read
+  says `cannot get the size of PATH: <reason>`), and `mmap failed for PATH` carries the reason too. `getrusage`
+  failures no longer read as a peak of 0: `run --json` prints `"peak_rss_bytes": null` and `--verbose` prints
+  `peak RSS: unavailable (...)`.
+- The sampler reads the mask id from the model's config, and the run keeps one thread count and one step count
+  (issue #219). `GenConfig.mask_id` and its default of 126336, which every architecture inherited until the CLI
+  overwrote it, are gone: `generate` and the Dream and LLaDA loops use `model.config().mask_id`. `GenResult.steps_taken`
+  is a method that returns `forward_passes`, which it always equalled, and `_run` takes its thread count from the
+  config it receives instead of a second parameter. The `--json` output is unchanged.
+- `run --json` keeps stdout clean (issues #223 and #110): `--json` together with `--visual`, `--verbose` or
+  `--dump-step-stats` is a usage error (`--json cannot be combined with --visual`, exit status 2, before the model
+  loads), because each of them prints to stdout before the JSON object. Every `ERROR:` line, usage error or not, now
+  goes to stderr; help text and `--version` stay on stdout. `docs/cli.md` no longer tells consumers to select the line
+  that starts with `{`.
+- The flag parser refuses what it used to accept silently (issue #222): a lookup of a flag name that the command
+  does not declare (`a.int_or("max-token", 128)` returned the default), a value that is the name of a declared flag
+  (`--prompt --verbose` took `--verbose` as the prompt), a value flag given twice (the last won) and an empty entry in
+  `--tokens` or `--rows` (`--rows 0,,2` named two rows; a trailing comma stays legal). Each usage error names the
+  flag and exits with status 2. The range of each numeric flag lives in one place, `int_flag_rule` and
+  `float_flag_rule` in the sampler, which the command line and the sampler both use, so `--temperature` is now checked
+  by the sampler too (a NaN used to read as greedy). `Decision` has `help`, `error` and `run` constructors and derives
+  the exit status, and `CanvasPrinter` refuses an interval below 1 in its constructor.
+- `logits` writes its `.f32` file through `FILE.tmp`, checks the size and renames it (issue #208). On a full disk
+  `FileHandle.write_bytes` does not return an error: in Mojo 1.1.0 it calls `abort()` when `write()` fails
+  (`std/io/file.mojo`, tag `mojo/v1.1.0`, line 598), so the old code ended with SIGABRT and a partial file under the
+  final name. The new code uses `write_all` and `close`, which raise, then compares the size, and removes the
+  temporary file on any error; the message is `cannot write FILE: <reason>` with exit status 1.
+- `tokenize` and `run` refuse a chat prompt for an architecture other than `llada`, `dream` and `diffusion-gemma`
+  (issue #207). `chat_prompt` fell through to the LLaDA header template for every other architecture, so
+  `tokenize --model qwen2.gguf --prompt hi` printed the ids of text that model never saw and exited with status 0. The
+  error names the architecture and suggests `--no-chat`, which still tokenizes the text unchanged.
+- `--threads` reaches every parallel CPU loop (issue #206): `quantize_acts` and the weight repack ran on every core
+  whatever the setting, so a `--threads 1` timing included all-core work. Both now use `parallel_for` with the worker
+  count, and the model, DiffusionGemma and MoE paths pass it; each token and each 8-row group is independent, so the
+  bytes are identical for every count. A Dream run refuses `--full-logits`, `--threshold` and `--dual-cache` by name
+  before the model loads, and `run --json` reports `remasking` (Dream's `low_confidence` is `entropy`) and omits
+  `block_length` and `full_logits` for Dream, which reads neither. Dream still accepts `--block-length`: five scripts
+  in `bench/` and `scripts/` pass it for every architecture.
+- `run` refuses a DiffusionGemma file as soon as its header is read, before the tokenizer is built and the prompt
+  encoded, and says that the architecture runs through `logits` only until the generation loop is wired (issue #205,
+  wiring stays in #64). `run --help` and `docs/cli.md` mark the `--eb-*` flags as having no effect yet. The
+  entropy-bounded sampler also refuses a generation length that differs from the model's canvas length, which
+  overflowed the logits buffer when smaller and moved the prompt boundary otherwise. The `check_runnable` docstring no
+  longer says that no forward pass exists.
+- The LLaDA and Dream loops stop with `non-finite logits at canvas position P, step S` when a row's softmax is not a
+  number, on the CPU and the GPU statistics path (issue #196). A single Q4_K block with an f16 scale of NaN used to
+  give a canvas of token 0 repeated, stop reason `complete` and exit status 0. The GPU kernel's tie and NaN rule is
+  unchanged; the host checks the statistics it returns.
+- `run` refuses a canvas longer than the file's context length before any weight is mapped (issue #201): the prompt
+  tokens plus `--max-tokens` must not exceed `<arch>.context_length` (4096 when the key is absent). A
+  `--max-tokens` of 2^62 used to wrap the activation sizes and write past a small buffer after the whole model had
+  loaded. `Floats` and `alloc_bytes` also refuse a size that does not fit in an Int, with a named error. No script
+  or document in `bench/`, `scripts/` or `docs/` asks for a canvas near 4096: the largest generation length any of
+  them passes or defaults to is 256.
+- `run` and `logits` check every option that the flags alone decide before the model file is opened (issue #202):
+  `--threshold` (finite, 0 to 1), `--prev-temp-inv` (finite, above 0), `--device`, `--path`, `--remasking`, and a
+  `--block-length` or `--steps` that does not divide `--max-tokens`. Each exits with status 2 and names the flag.
+  A default block length that does not divide `--max-tokens`, and a `--remasking` the architecture does not take, are
+  refused once the header is read, before any weight is mapped. `logits` on a DiffusionGemma file checks `--rows` and
+  the size of `--prev` against the header's canvas length before the weights load.
 - The toolchain comes from uv (`uv sync --frozen`, `uv.lock`) instead of pixi, and
   the `./mojo-dllm` launcher wraps `setup`, `pull`, `run` and `doctor`. The
   binary exits 2 on a usage error and names the flag, command or value that
@@ -163,6 +279,82 @@ semantic versioning (0.y: minor bumps may break things).
   non-zero power of two, and an array whose element count is negative or
   larger than the bytes left in the file, naming the key (#55, #56). An
   alignment of 0 used to point tensors at the file header.
+- The GGUF reader compares a length with the bytes left in the file instead of
+  adding it to the read position, so a string length between 2^63 minus the
+  position and 2^63 no longer wraps past the bounds check and aborts the
+  process; a `Reader` that starts outside the file refuses to exist (#194).
+- The GGUF reader checks every tensor of the directory before any loader sees
+  it: each used dimension is at least 1, the element and byte counts are
+  computed by dividing first so they cannot wrap, a row of a quantized type
+  ends on a block boundary, the offset is not negative and a multiple of the
+  alignment, and the bytes lie inside the file. A repeated tensor name or
+  metadata key is refused (the first used to win without a message). `TensorInfo`
+  has a `supported` field in place of the byte count of -1 that marked a type
+  the reader cannot size, and `ggml_row_bytes` refuses a partial block (#195).
+- `PackedMatrix` and `ExpertWeights` take the byte count of their source along
+  with its address and refuse a source that does not hold exactly the rows the
+  shape needs. Callers that build them by hand (the benchmarks, the tests) pass
+  the size of the buffer (#218).
+- `Mapping.drop` and `Mapping.populate` take an offset into the file in place of
+  an absolute address and raise unless the range lies inside the mapping; a
+  bad range used to reach `madvise`, where `MADV_DONTNEED` outside the map
+  zero-fills heap pages. `Mapping.ptr()` returns a pointer with an immutable
+  origin, so a store through it no longer compiles (#216).
+- For LLaDA and Dream, `ModelConfig` checks that `token_embd.weight` and, when
+  the file has one, `output.weight` are `[hidden, vocab]`, with the vocabulary
+  taken from `<arch>.vocab_size` or from the rows of `output.weight`. A table
+  with fewer rows than the vocabulary let a token id pass the guard and read
+  past the tensor. The check runs before any loader and replaces the width test
+  that the CPU and the GPU loader each carried; the error names the tensor,
+  both shapes and the keys that set them (#198).
+- For LLaDA and Dream, `ModelConfig` refuses a block count, hidden width, head
+  count, KV head count, feed-forward width or vocabulary size that is zero or
+  negative, and an epsilon or RoPE base that is zero, negative, NaN or
+  infinite, naming the key. A zero block count used to load a model with no
+  layers, a zero KV head count one with no KV width, and a negative head count
+  a negative head dimension (#199).
+- `inspect` and `run --verbose` list each metadata key that the file lacks and
+  the reader replaced by a default, as `llada.rope.freq_base = 10000 (default,
+  key absent)`: the KV head count, the context length, the rope base and the
+  logit shift for LLaDA and Dream, and the context length and the final logit
+  softcap for DiffusionGemma. A converter that drops `rope.freq_base` no longer
+  runs on a value nobody sees. The defaults match llama.cpp's except two, which
+  stay as they were: llama.cpp requires `context_length`, where this reader
+  assumes 4096 and enforces it only for `run` (the prompt plus `--max-tokens` must fit, issue #201), and its diffusion example reads a missing
+  `diffusion.shift_logits` as true for every architecture, where this reader
+  takes false for LLaDA and true for Dream. `inspect` of a LLaDA or Dream file
+  also prints `config: refused:` with the reason when its metadata is invalid
+  (#204).
+- `utf8_decode`, which the byte-level tokenizer applies to every prompt fragment
+  and to every token text, requires the continuation bytes of a sequence and
+  refuses overlong forms, surrogates and values above U+10FFFF. A byte that
+  does not begin a valid sequence becomes U+FFFD and decoding goes on at the
+  next byte, as in llama.cpp's `unicode_cpts_from_utf8`. It used to take the
+  next one to three bytes whatever they were: the Latin-1 text `caf\xe9 au
+  lait` decoded `E9 20 61` to U+9821 and lost the space and the `a`. The check
+  lives in the new `formats/utf8.mojo`. `run` and `tokenize` refuse a
+  `--prompt` that is not valid UTF-8 with exit status 2 and the offset of the
+  first bad byte (`flag --prompt is not valid UTF-8: invalid byte at offset 3`);
+  the Mojo runtime does not refuse such an argument itself (#197).
+- The byte-level tokenizer loader and the gemma4 vocabulary share one
+  `validate_token_table` (new `tokenizer/vocab.mojo`) and one `special_token_id`.
+  The byte-level loader now refuses a token type array of another length than
+  the token array, a repeated token text (the last id used to win), a special
+  token id outside the vocabulary, a missing EOS id for LLaDA and Dream, and
+  `add_bos_token` without a BOS id, each naming the key. `run` compares the
+  tokenizer's vocabulary size with the model's before it loads the weights
+  (#200).
+- The GGUF reader checks that every string it turns into a `String` (a key, a
+  tensor name, a string value, a token text) is valid UTF-8 and raises with the
+  entry or key, the file offset and the bad byte; `inspect` prints
+  `<string, N bytes, not valid UTF-8 at byte B>` for such a value (#225).
+- Three validity gaps close (#227): `Gemma4Vocab` and the byte-level loader refuse
+  a negative special token id other than -1, `Gemma4Vocab` refuses a token type
+  outside 0 to 6 (it used to read it as attribute 0, which decodes to empty
+  text), a DiffusionGemma file with `self_cond_gate.weight` and a vocabulary
+  that is not a multiple of 8 is refused at load and not at the first
+  self-conditioned step, and `Rng.below` raises for a bound of 0 or less in
+  place of returning `n - 1`.
 - Model configuration rejects incompatible RoPE widths/scaling and attention
   key lengths, and unsupported-architecture errors list LLaDA and Dream.
 - Matrix load errors name the tensor and distinguish an unsupported type from
