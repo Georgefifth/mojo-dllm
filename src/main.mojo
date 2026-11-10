@@ -468,13 +468,37 @@ def model_error(message: String) -> String:
     return message
 
 
-def peak_rss_bytes() raises -> Int:
+def peak_rss_bytes(who: Int = 0) raises -> Int:
     """Peak resident set size in bytes (getrusage ru_maxrss, which Linux reports in KiB).
+
+    `who` is the `getrusage` selector, 0 for this process. A failing call
+    raises with the system's reason: reading the buffer it never filled would
+    report a peak of 0, which looks like a measurement.
     """
     var buf = Bytes(256)
-    _ = external_call["getrusage", c_int](c_int(0), buf.addr)
+    var rc = external_call["getrusage", c_int](c_int(who), buf.addr)
+    var failure = get_errno()
+    if Int(rc) != 0:
+        raise Error("getrusage failed: " + String(failure))
     # struct rusage: two struct timeval (16 bytes each), then long ru_maxrss.
     return Int(buf.u8().unsafe_bitcast[Int64]().unsafe_load(4)) * 1024
+
+
+def peak_rss_json(who: Int = 0) -> String:
+    """The `peak_rss_bytes` member's value: the number, or `null` when the
+    measurement failed."""
+    try:
+        return String(peak_rss_bytes(who))
+    except:
+        return "null"
+
+
+def peak_rss_text(who: Int = 0) -> String:
+    """The `--verbose` line for the peak: gigabytes, or why it is missing."""
+    try:
+        return String(Float64(peak_rss_bytes(who)) / 1e9) + " GB"
+    except e:
+        return "unavailable (" + String(e) + ")"
 
 
 def chat_prompt(arch: String, text: String) raises -> String:
@@ -906,7 +930,7 @@ def _run[
             + ', "lm_head_ms_per_forward": '
             + String(Float64(tm.head_ns) / 1e6 / fw)
             + ', "peak_rss_bytes": '
-            + String(peak_rss_bytes())
+            + peak_rss_json()
             + ', "step_ms": '
             + steps_json
             + ', "tokens": ['
@@ -945,7 +969,7 @@ def _run[
             "ms",
         )
         print("tokens/s:", Float64(cfg.gen_length) / res.seconds)
-        print("peak RSS:", Float64(peak_rss_bytes()) / 1e9, "GB")
+        print("peak RSS:", peak_rss_text())
 
 
 def _csv(xs: List[Int]) -> String:

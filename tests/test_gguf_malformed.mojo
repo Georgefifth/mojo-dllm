@@ -85,7 +85,7 @@ def test_accepts_string_array() raises:
 
 
 def test_rejects_empty() raises:
-    with assert_raises(contains="file is empty or unreadable"):
+    with assert_raises(contains="file is empty: "):
         _ = GGUFFile(FIX + "empty.gguf")
 
 

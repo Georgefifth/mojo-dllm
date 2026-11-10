@@ -52,7 +52,7 @@ stops the run (see [Errors](#errors)).
 | `--visual-interval N` | 1 | redraw every N steps and at the final step; requires `--visual` and N at least 1 |
 | `--verbose` | off | model, device and load time before the text; step timings and peak memory after it |
 | `--dump-step-stats` | off | one line per denoising step |
-| `--json` | off | one JSON object with timings, tokens and text. `remasking` names the strategy the run used (for Dream, `entropy` when the flag says `low_confidence`); `block_length` and `full_logits` appear for LLaDA only, because Dream reads neither. `steps_taken` counts the denoising steps run and `stop_reason` says why the loop ended: `complete`, `answer_fixed` (early stop), or for DiffusionGemma `converged` or `max_steps` |
+| `--json` | off | one JSON object with timings, tokens and text. `peak_rss_bytes` is `null` when the operating system could not report it, never 0. `remasking` names the strategy the run used (for Dream, `entropy` when the flag says `low_confidence`); `block_length` and `full_logits` appear for LLaDA only, because Dream reads neither. `steps_taken` counts the denoising steps run and `stop_reason` says why the loop ended: `complete`, `answer_fixed` (early stop), or for DiffusionGemma `converged` or `max_steps` |
 
 The flags `--threshold`, `--dual-cache` and `--full-logits` are LLaDA's; a Dream run refuses them by name before the model loads (`--threshold applies to llada only, not dream`). Dream also reads no `--block-length`, but still accepts it, because the benchmark and parity scripts pass it for every architecture.
 
@@ -185,6 +185,9 @@ stderr, so stdout stays free for the answer or the JSON object; help text and
 | `ERROR: prompt 10 + --max-tokens 4096 = 4106 exceeds the context length 4096 (llada.context_length)` | The canvas is longer than the file's context length. Lower `--max-tokens`. Exit status 1, before any weight is mapped |
 | `ERROR: cannot open model file PATH: No such file or directory` | The path is wrong. The reason is the operating system's. The next line is `to download a model, run: ./mojo-dllm pull` |
 | `ERROR: cannot open model file PATH: Permission denied` | The open failed for a reason other than a missing file, such as `Not a directory`. The operating system names the reason. No download hint follows, because `pull` would not fix it |
+| `ERROR: file is empty: PATH` | The model file has no bytes. Download it again |
+| `ERROR: cannot get the size of PATH: Illegal seek` | The path opens but is not a regular file (a pipe or a FIFO). The operating system names the reason |
+| `ERROR: mmap failed for PATH: No such device` | The file cannot be mapped (a device or a pseudo file). The operating system names the reason; `Cannot allocate memory` means the address space is exhausted |
 | `ERROR: is a directory: PATH` | The model path names a directory |
 | `error: invalid UTF-8 was detected in one or more arguments` | The Mojo runtime prints this and exits with status 125 before the command starts, when a flag value such as `--prompt` is not UTF-8 (a Latin-1 text, for example). Save the text as UTF-8. The command never sees the value |
 | `ERROR: PATH is not a GGUF file (bad magic).` | A failed download leaves an HTML error page with a `.gguf` name. Delete the file and run `./mojo-dllm pull` again |

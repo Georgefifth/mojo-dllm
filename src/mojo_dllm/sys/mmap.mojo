@@ -59,9 +59,15 @@ struct Mapping(Movable):
             _ = external_call["close", c_int](fd)
             raise Error("is a directory: " + path)
         var end = Int(external_call["lseek", Int](fd, Int(0), c_int(SEEK_END)))
-        if end <= 0:
+        var seek_failure = get_errno()
+        if end < 0:
             _ = external_call["close", c_int](fd)
-            raise Error("file is empty or unreadable: " + path)
+            raise Error(
+                "cannot get the size of " + path + ": " + String(seek_failure)
+            )
+        if end == 0:
+            _ = external_call["close", c_int](fd)
+            raise Error("file is empty: " + path)
         var addr = Int(
             external_call["mmap", Int](
                 Int(0),
@@ -72,9 +78,10 @@ struct Mapping(Movable):
                 Int(0),
             )
         )
+        var map_failure = get_errno()
         _ = external_call["close", c_int](fd)
         if addr == -1 or addr == 0:
-            raise Error("mmap failed for " + path)
+            raise Error("mmap failed for " + path + ": " + String(map_failure))
         self.addr = addr
         self.size = end
 

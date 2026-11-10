@@ -1,3 +1,6 @@
+from std.ffi import c_int, external_call
+from std.os import remove
+from std.os.path import exists
 from std.testing import assert_equal, assert_true, assert_raises, TestSuite
 
 from mojo_dllm.sys.mem import Bytes, Floats, alloc_bytes, free_bytes
@@ -106,11 +109,40 @@ def test_mapping_reports_the_errno_of_the_failure() raises:
 
 def test_mapping_empty_file() raises:
     with assert_raises(
-        contains=(
-            "file is empty or unreadable: tests/fixtures/malformed/empty.gguf"
-        )
+        contains="file is empty: tests/fixtures/malformed/empty.gguf"
     ):
         _ = Mapping("tests/fixtures/malformed/empty.gguf")
+
+
+def test_mapping_reports_the_errno_when_mmap_fails() raises:
+    # A sysfs attribute reports a size of 4096 and cannot be mapped: mmap
+    # answers ENODEV, which the message must carry.
+    var path = "/sys/kernel/uevent_seqnum"
+    if not exists(path):
+        return
+    with assert_raises(contains="mmap failed for " + path + ": No such device"):
+        _ = Mapping(path)
+
+
+def test_mapping_reports_the_errno_when_the_size_cannot_be_read() raises:
+    # A FIFO opens and answers pread and lseek with ESPIPE. An open writer
+    # keeps the read-only open from blocking.
+    var path = String("build/tests/seek.fifo")
+    if exists(path):
+        remove(path)
+    var cpath = path
+    if (
+        external_call["mkfifo", c_int](cpath.as_c_string_span(), c_int(0o600))
+        != 0
+    ):
+        return
+    var keeper = open(path, "rw")
+    with assert_raises(
+        contains="cannot get the size of " + path + ": Illegal seek"
+    ):
+        _ = Mapping(path)
+    keeper.close()
+    remove(path)
 
 
 def test_mapping_rejects_directory() raises:

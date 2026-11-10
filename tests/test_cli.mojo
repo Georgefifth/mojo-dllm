@@ -34,6 +34,9 @@ from main import (
     model_error,
     version_line,
     sampler_json,
+    peak_rss_bytes,
+    peak_rss_json,
+    peak_rss_text,
     stop_json,
     write_bytes_checked,
     write_f32_file,
@@ -1779,6 +1782,22 @@ def test_the_logits_command_writes_nothing_when_the_output_cannot_be_made() rais
     var path = String("/proc/mojo-dllm-no-such-dir/dg-logits.f32")
     assert_equal(execute(_logits_args(_csv(rows), path, "cpu")), 1)
     assert_true(not exists(path))
+
+
+def test_peak_rss_is_a_measurement_or_an_error_never_a_zero() raises:
+    var peak = peak_rss_bytes()
+    assert_true(peak > 1_000_000, "this process holds more than 1 MB")
+    assert_true(Int(peak_rss_json()) >= peak)
+    assert_true(peak_rss_text().endswith(" GB"))
+    # An invalid selector makes getrusage fail with EINVAL; the old code read
+    # the buffer it never filled and reported a peak of 0.
+    with assert_raises(contains="getrusage failed: Invalid argument"):
+        _ = peak_rss_bytes(99)
+    # The two report lines never print the failed figure as a number.
+    assert_equal(peak_rss_json(99), "null")
+    assert_equal(
+        peak_rss_text(99), "unavailable (getrusage failed: Invalid argument)"
+    )
 
 
 def test_the_gemma_only_flags_are_named_for_other_models() raises:

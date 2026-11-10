@@ -174,6 +174,11 @@ semantic versioning (0.y: minor bumps may break things).
 
 ### Changed
 
+- Mapping a model file names the operating system's reason when it fails (issue #224). A failing `lseek` is no longer
+  reported as "file is empty or unreadable" (an empty file now says `file is empty: PATH`; a size that cannot be read
+  says `cannot get the size of PATH: <reason>`), and `mmap failed for PATH` carries the reason too. `getrusage`
+  failures no longer read as a peak of 0: `run --json` prints `"peak_rss_bytes": null` and `--verbose` prints
+  `peak RSS: unavailable (...)`.
 - The sampler reads the mask id from the model's config, and the run keeps one thread count and one step count
   (issue #219). `GenConfig.mask_id` and its default of 126336, which every architecture inherited until the CLI
   overwrote it, are gone: `generate` and the Dream and LLaDA loops use `model.config().mask_id`. `GenResult.steps_taken`
