@@ -317,7 +317,7 @@ semantic versioning (0.y: minor bumps may break things).
   softcap for DiffusionGemma. A converter that drops `rope.freq_base` no longer
   runs on a value nobody sees. The defaults match llama.cpp's except two, which
   stay as they were: llama.cpp requires `context_length`, where this reader
-  assumes 4096 and never enforces it, and its diffusion example reads a missing
+  assumes 4096 and enforces it only for `run` (the prompt plus `--max-tokens` must fit, issue #201), and its diffusion example reads a missing
   `diffusion.shift_logits` as true for every architecture, where this reader
   takes false for LLaDA and true for Dream. `inspect` of a LLaDA or Dream file
   also prints `config: refused:` with the reason when its metadata is invalid
