@@ -159,7 +159,8 @@ def _check_sc_logits(name: String, max_tokens: Int) raises:
     m.forward_sc(cs.tokens, buf.ptr(), cs.temp_inv)
     # Rows agree to rounding but for a few where an int8 rounding step lands on
     # a tie (see test_dg_forward). The tie flips measured on the tiny model
-    # leave 10 of 16 rows within 1e-5 (6 beyond it, worst 5.6e-3). A wrong
+    # leave 15 of 16 rows within 1e-5 for p9sc (worst 5.7e-3), 12 for p0sc
+    # (worst 7.2e-3) and 14 for p150sc (worst 4.2e-3). A wrong
     # formula moves every row, so the test asks for a quarter of the rows
     # within 1e-5, which tolerates 12 of 16 flipping on another CPU, and for
     # no row beyond 2e-2.

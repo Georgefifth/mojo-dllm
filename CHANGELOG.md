@@ -177,8 +177,10 @@ semantic versioning (0.y: minor bumps may break things).
 - The transposed embedding table of DiffusionGemma's self-conditioning is no longer zeroed before it is written, and the
   `soft_embed` partial sums and the CPU attention scores are not zeroed where every element is written first
   (issue #226). `Floats` takes `zero=False` for that. At the real size (vocabulary 262144, hidden 2816, 256 canvas
-  rows) building the table took a median 5.2 s before and 2.0 s after; the peak RSS is unchanged at 3.89 GB and a
-  `soft_embed` call took 2.09 s before and 1.97 s after. The numbers are bit for bit the same.
+  rows) building the table took 3.5 to 6.2 s before and 1.8 to 2.1 s after in one set of three interleaved runs (one
+  before run overlapped other work), and 2.2 to 2.8 s before and 1.2 to 1.3 s after in a later set on an idle machine
+  (about 1.8 times faster); the peak RSS is unchanged at 3.89 GB and a `soft_embed` call is unchanged within noise
+  (2.0 to 2.1 s). Each 64-row scratch block of the table build is still zeroed. The numbers are bit for bit the same.
 - The CPU MoE router names the token whose router scores are NaN or infinite (`non-finite router scores for token N`,
   issue #217). Before, every probability of that token was NaN, the selection picked expert 0 for every slot, and
   `grouped_experts` reported "MoE routing repeats expert 0", which hides the cause. `Routing` also keeps its capacity
@@ -187,7 +189,8 @@ semantic versioning (0.y: minor bumps may break things).
 - `logits --prev-temp-inv` for DiffusionGemma refuses a value whose product with the final logit soft cap exceeds
   1e8 (issue #229). The old bound, 3e38, accepted values that turned the whole canvas to NaN without an error: the
   softmax subtracts the maximum from an unrounded product, and from about 1e9 (cap 30) the leftover residue makes the
-  exponential infinite. Measured on rows of logits in [-30, 30]: NaN in 61 of 64 rows at 1e9 and in none up to 1e8.
+  exponential infinite. Measured on 64 rows of logits in [-30, 30] at the real vocabulary width of 262144: NaN in 61 of 64 rows at 1e9 and in
+  none up to 1e8. The onset depends on the row width: at width 4096, 21 of 64 rows are NaN at 1e8.
   With the real cap of 30 the largest accepted value is about 3e6, a temperature of 3e-7.
 - Mapping a model file names the operating system's reason when it fails (issue #224). A failing `lseek` is no longer
   reported as "file is empty or unreadable" (an empty file now says `file is empty: PATH`; a size that cannot be read
