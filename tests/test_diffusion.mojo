@@ -15,8 +15,15 @@ from mojo_dllm.diffusion.sampler import (
     StepObserver,
     generate_observed,
 )
-from mojo_dllm.models.transformer import DiffusionLM, RowStats
-from mojo_dllm.sys.mem import Floats
+from mojo_dllm.formats.gguf import GGUFFile
+from mojo_dllm.models.transformer import (
+    DenoisingModel,
+    DiffusionLM,
+    ModelConfig,
+    RowStats,
+    Timings,
+)
+from mojo_dllm.sys.mem import F32Ptr, Floats
 
 comptime FIX = "tests/fixtures/"
 
@@ -702,6 +709,193 @@ def test_gumbel_draw_at_a_vanishing_temperature_is_the_argmax() raises:
     var rng = Rng(7)
     for _ in range(200):
         assert_equal(_gumbel_argmax(logits.ptr(), 5, 1e-6, rng), 2)
+
+
+# ---- which positions the LLaDA and Dream samplers commit (#213) ---------------
+#
+# `tests/fixtures/golden-generation.tsv` holds what this implementation
+# produced. A sampler that commits the wrong positions, or takes a candidate
+# index for a position, can still match it. Here a scripted model gives every
+# candidate a row of known confidence, so the committed positions are worked
+# out by hand.
+
+comptime SCRIPT_VOCAB = 8
+comptime SCRIPT_MASK = 4
+
+
+struct _ScriptedModel(DenoisingModel, Movable):
+    """Answers forward call k with script[k]: rows in the order of `out_rows`,
+    [row][vocab]. Records the rows each call asked for."""
+
+    var cfg: ModelConfig
+    var script: List[List[Float32]]
+    var asked: List[List[Int]]
+
+    def __init__(
+        out self, arch: String, var script: List[List[Float32]]
+    ) raises:
+        self.cfg = ModelConfig(GGUFFile(FIX + "tiny-llada.gguf"))
+        self.cfg.arch = arch
+        self.cfg.vocab = SCRIPT_VOCAB
+        self.cfg.mask_id = SCRIPT_MASK
+        self.cfg.shift_logits = arch == "dream"
+        self.script = script^
+        self.asked = List[List[Int]]()
+
+    def config(self) -> ModelConfig:
+        return self.cfg
+
+    def logit_row(self, position: Int) -> Int:
+        return position - 1 if self.cfg.shift_logits else position
+
+    def forward(
+        mut self, tokens: List[Int], out_rows: List[Int], logits: F32Ptr
+    ) raises:
+        var call = len(self.asked)
+        self.asked.append(out_rows.copy())
+        assert_true(call < len(self.script), "more forward calls than scripted")
+        var rows = self.script[call].copy()
+        assert_equal(
+            len(rows), len(out_rows) * SCRIPT_VOCAB, "script rows of call"
+        )
+        for i in range(len(rows)):
+            logits[unsafe_offset=i] = rows[i]
+
+    def forward_window(
+        mut self,
+        tokens: List[Int],
+        lo: Int,
+        hi: Int,
+        out_rows: List[Int],
+        logits: F32Ptr,
+    ) raises:
+        raise Error("the scripted model has no window")
+
+    def device_row_stats(self) -> Bool:
+        return False
+
+    def forward_stats(
+        mut self, tokens: List[Int], out_rows: List[Int], mut out: RowStats
+    ) raises:
+        raise Error("the scripted model has no device row statistics")
+
+    def model_name(self) raises -> String:
+        return "scripted"
+
+    def load_time(self) -> Float64:
+        return 0.0
+
+    def stats(self) -> Timings:
+        return Timings()
+
+
+struct _Steps(Movable, StepObserver):
+    var committed: List[List[Int]]
+    var canvas: List[List[Int]]
+
+    def __init__(out self):
+        self.committed = List[List[Int]]()
+        self.canvas = List[List[Int]]()
+
+    def on_step(
+        mut self, tokens: List[Int], committed: List[Int], step: Int, total: Int
+    ) raises:
+        self.committed.append(committed.copy())
+        self.canvas.append(tokens.copy())
+
+
+def _scripted_rows(tops: List[Int], margins: List[Int]) -> List[Float32]:
+    """One row per candidate: zero everywhere but `margin` at its top token,
+    so the argmax is `top` and a larger margin is a higher confidence under
+    every confidence measure the samplers use."""
+    var out = List[Float32]()
+    for j in range(len(tops)):
+        for v in range(SCRIPT_VOCAB):
+            out.append(Float32(margins[j]) if v == tops[j] else Float32(0))
+    return out^
+
+
+def _assert_list(got: List[Int], want: List[Int], what: String) raises:
+    assert_equal(len(got), len(want), what + ": length")
+    for i in range(len(want)):
+        assert_equal(got[i], want[i], what + " [" + String(i) + "]")
+
+
+def test_llada_commits_the_most_confident_positions() raises:
+    # Prompt [1, 2], four masked slots at positions 2..5, two steps. Step 1
+    # candidates are 2, 3, 4, 5 with margins 1, 4, 2, 3: the two most confident
+    # are candidates 1 and 3, that is positions 3 and 5 (not 1 and 3, the
+    # candidate indices). Step 2 has candidates 2 and 4 with margins 2 and 5.
+    var script = List[List[Float32]]()
+    script.append(_scripted_rows([5, 6, 7, 5], [1, 4, 2, 3]))
+    script.append(_scripted_rows([7, 6], [2, 5]))
+    var m = _ScriptedModel("llada", script^)
+    var c = GenConfig()
+    c.gen_length = 4
+    c.block_length = 4
+    c.steps = 2
+    c.early_stop = False
+    var obs = _Steps()
+    var prompt: List[Int] = [1, 2]
+    var r = generate_observed(m, prompt, c, obs)
+    assert_equal(len(obs.committed), 2)
+    _assert_list(obs.committed[0], [3, 5], "step 1 committed")
+    _assert_list(obs.committed[1], [4, 2], "step 2 committed")
+    _assert_list(obs.canvas[0], [1, 2, 4, 6, 4, 5], "canvas after step 1")
+    _assert_list(r.tokens, [1, 2, 7, 6, 6, 5], "final canvas")
+    _assert_list(m.asked[0], [2, 3, 4, 5], "rows of step 1")
+    _assert_list(m.asked[1], [2, 4], "rows of step 2")
+    assert_equal(r.forward_passes, 2)
+
+
+def test_llada_commits_per_block_and_keeps_earlier_blocks() raises:
+    # Two blocks of two slots, two steps: one commit per step inside a block.
+    var script = List[List[Float32]]()
+    script.append(_scripted_rows([5, 6], [3, 1]))
+    script.append(_scripted_rows([7], [1]))
+    script.append(_scripted_rows([6, 5], [1, 4]))
+    script.append(_scripted_rows([1], [1]))
+    var m = _ScriptedModel("llada", script^)
+    var c = GenConfig()
+    c.gen_length = 4
+    c.block_length = 2
+    c.steps = 4
+    c.early_stop = False
+    var obs = _Steps()
+    var prompt: List[Int] = [1, 2]
+    var r = generate_observed(m, prompt, c, obs)
+    _assert_list(obs.committed[0], [2], "block 0 step 1")
+    _assert_list(obs.committed[1], [3], "block 0 step 2")
+    _assert_list(obs.committed[2], [5], "block 1 step 1")
+    _assert_list(obs.committed[3], [4], "block 1 step 2")
+    _assert_list(r.tokens, [1, 2, 5, 7, 1, 5], "final canvas")
+    _assert_list(m.asked[2], [4, 5], "rows of block 1 step 1")
+
+
+def test_dream_commits_its_schedule_in_confidence_order() raises:
+    # Four slots at positions 2..5 and three steps. n_transfer is
+    # int(n_masked * (1 - s/t)): 1 of 4, 1 of 3, then the last 2. Dream's
+    # logits are shifted, so the rows asked for are position - 1.
+    var script = List[List[Float32]]()
+    script.append(_scripted_rows([5, 6, 7, 5], [1, 4, 2, 3]))
+    script.append(_scripted_rows([7, 5, 6], [3, 1, 2]))
+    script.append(_scripted_rows([6, 1], [2, 5]))
+    var m = _ScriptedModel("dream", script^)
+    var c = GenConfig()
+    c.gen_length = 4
+    c.steps = 3
+    c.early_stop = False
+    var obs = _Steps()
+    var prompt: List[Int] = [1, 2]
+    var r = generate_observed(m, prompt, c, obs)
+    assert_equal(len(obs.committed), 3)
+    _assert_list(obs.committed[0], [3], "step 1 committed")
+    _assert_list(obs.committed[1], [2], "step 2 committed")
+    _assert_list(obs.committed[2], [5, 4], "step 3 committed")
+    _assert_list(m.asked[0], [1, 2, 3, 4], "rows of step 1")
+    _assert_list(m.asked[1], [1, 3, 4], "rows of step 2")
+    _assert_list(m.asked[2], [3, 4], "rows of step 3")
+    _assert_list(r.tokens, [1, 2, 7, 6, 6, 1], "final canvas")
 
 
 def main() raises:
