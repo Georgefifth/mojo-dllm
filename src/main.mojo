@@ -365,10 +365,6 @@ def _number_problems(a: Args) raises -> String:
         if name == "random" and a.has("threshold"):
             if Float64(a.get("threshold")) > 0:
                 return "flag --threshold needs low_confidence remasking"
-    if _given(a, "block-length"):
-        var schedule = schedule_problem(a)
-        if schedule.byte_length() > 0:
-            return schedule
     for flag in ["tokens", "rows"]:
         if not _given(a, flag):
             continue

@@ -1398,55 +1398,89 @@ def test_run_option_values_are_checked_before_the_model_loads() raises:
     _same("run", random, "flag --threshold needs low_confidence remasking")
 
 
-def test_the_block_and_step_split_is_checked_before_the_model_loads() raises:
-    var base = List[String](["--model", "m", "--prompt", "p"])
-    var a = base.copy()
-    for x in List[String](["--max-tokens", "100", "--block-length", "32"]):
-        a.append(x)
-    _same(
-        "run",
-        a,
-        "flag --max-tokens 100 is not a multiple of --block-length 32",
+def _arch_run_args(extra: List[String]) raises -> Args:
+    var spec = command_spec("run")
+    var argv = List[String](["x", "run", "--prompt", "p"])
+    for x in extra:
+        argv.append(x)
+    return Args(argv, spec.values, spec.booleans)
+
+
+def test_the_block_and_step_split_is_checked_for_llada_only() raises:
+    # The split needs the architecture, which only the file says, so the flag
+    # check lets it through and `check_arch_flags` applies it to LLaDA.
+    var bad_block = _arch_run_args(
+        ["--max-tokens", "100", "--block-length", "32"]
     )
-    var b = base.copy()
-    for x in List[String](
-        ["--max-tokens", "64", "--block-length", "32", "--steps", "3"]
+    assert_equal(
+        _check(
+            "run",
+            [
+                "--model",
+                "m",
+                "--prompt",
+                "p",
+                "--max-tokens",
+                "100",
+                "--block-length",
+                "32",
+            ],
+        ),
+        "",
+    )
+    with assert_raises(
+        contains="flag --max-tokens 100 is not a multiple of --block-length 32"
     ):
-        b.append(x)
-    _same(
-        "run",
-        b,
-        (
+        check_arch_flags(bad_block, "llada")
+    var bad_steps = _arch_run_args(
+        ["--max-tokens", "64", "--block-length", "32", "--steps", "3"]
+    )
+    with assert_raises(
+        contains=(
             "flag --steps 3 is not a multiple of the number of blocks 2"
             " (--max-tokens 64 / block length 32)"
-        ),
-    )
-    var fine = base.copy()
-    for x in List[String](
-        ["--max-tokens", "64", "--block-length", "32", "--steps", "4"]
+        )
     ):
-        fine.append(x)
-    assert_equal(_check("run", fine), "")
-    # No --block-length: the default 32 depends on the architecture, which only
-    # the file says, so the header check names the default.
-    var d = base.copy()
-    d.append("--max-tokens")
-    d.append("100")
-    assert_equal(_check("run", d), "")
-    var spec = command_spec("run")
-    var args = Args(
-        ["x", "run", "--prompt", "p", "--max-tokens", "100"],
-        spec.values,
-        spec.booleans,
+        check_arch_flags(bad_steps, "llada")
+    check_arch_flags(
+        _arch_run_args(
+            ["--max-tokens", "64", "--block-length", "32", "--steps", "4"]
+        ),
+        "llada",
     )
+    # Dream reads neither flag, and the benchmark scripts pass --block-length
+    # for every architecture: a run that was accepted stays accepted.
+    var dream = _arch_run_args(
+        ["--max-tokens", "100", "--steps", "100", "--block-length", "32"]
+    )
+    assert_equal(
+        _check(
+            "run",
+            [
+                "--model",
+                "m",
+                "--prompt",
+                "p",
+                "--max-tokens",
+                "100",
+                "--steps",
+                "100",
+                "--block-length",
+                "32",
+            ],
+        ),
+        "",
+    )
+    check_arch_flags(dream, "dream")
+    # No --block-length: the default 32 depends on the architecture.
     with assert_raises(
         contains=(
             "flag --max-tokens 100 is not a multiple of the default block"
             " length 32; pass --block-length"
         )
     ):
-        check_arch_flags(args, "llada")
-    check_arch_flags(args, "dream")
+        check_arch_flags(_arch_run_args(["--max-tokens", "100"]), "llada")
+    check_arch_flags(_arch_run_args(["--max-tokens", "100"]), "dream")
 
 
 def test_remasking_must_suit_the_architecture_before_the_model_loads() raises:

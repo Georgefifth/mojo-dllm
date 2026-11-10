@@ -90,10 +90,11 @@ the command stops with the usage error `--json cannot be combined with --visual`
 
 The checks that need only the flags run before the model file is opened, and each exits with status 2 and names the flag:
 `--threshold` outside 0 to 1 or not finite, `--device` other than `cpu` or `gpu`, `--remasking` outside the five names
-above, `--threshold` above 0 with `--remasking random`, and a `--block-length` that does not divide `--max-tokens` or a
-`--steps` that is not a multiple of the number of blocks. When `--block-length` is absent its default (32, or
-`--max-tokens` when smaller) depends on the architecture, so the check for it runs once the file's header is read, still
-before any weight is mapped, and exits with status 1: `flag --max-tokens 100 is not a multiple of the default block
+above, and `--threshold` above 0 with `--remasking random`. LLaDA also needs a `--block-length` that divides
+`--max-tokens` and a `--steps` that is a multiple of the number of blocks (Dream reads neither flag and accepts any
+value); that check depends on the architecture, which only the file's header says, so it runs once the header is read,
+still before any weight is mapped, and exits with status 1, as does the check of the default block length (32, or
+`--max-tokens` when smaller): `flag --max-tokens 100 is not a multiple of the default block
 length 32`. The same header check refuses a `--remasking` value that the file's architecture does not take (`entropy`,
 `maskgit_plus` and `topk_margin` for LLaDA, `random` for Dream).
 
