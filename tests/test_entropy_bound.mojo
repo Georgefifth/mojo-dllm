@@ -1,9 +1,9 @@
 """DiffusionGemma's entropy-bounded denoiser against exact oracles.
 
 The reference is `diffusion_generate_entropy_bound` in llama.cpp PR 24423
-(2e715c0639). There is no DiffusionGemma forward pass yet, so a scripted
-model hands the sampler logits rows chosen so that every entropy, argmax and
-accepted set is known in advance.
+(2e715c0639). The DiffusionGemma forward pass is not a `DenoisingModel` yet
+(#64), so a scripted model hands the sampler logits rows chosen so that every
+entropy, argmax and accepted set is known in advance.
 """
 
 from std.math import ceil, exp, log

@@ -166,12 +166,12 @@ def route_tokens(
 
     parallel_for(work, routing.n_tokens, threads)
     # The pointers above have untracked origins; keep their owners alive
-    # through the parallel callback, just as attention's score scratch does.
+    # through the parallel callback, as attention's score scratch does.
     _ = normalized^
     _ = probabilities^
     # A NaN or infinite score makes every probability of the token NaN, and the
-    # selection then picks expert 0 for every slot. Name the token here, where
-    # the cause is, not in `grouped_experts` where it reads as a repeat.
+    # selection then picks expert 0 for every slot. Name the token here, at the
+    # cause; in `grouped_experts` the failure reads as a repeated expert.
     for t in range(routing.n_tokens):
         for s in range(top_k):
             if not isfinite(wp.unsafe_load(t * top_k + s)):
@@ -314,7 +314,7 @@ def grouped_experts(
 
     Empty experts launch no GEMM. Buffers hold the complete canvas for an
     expert, including the case where every token chooses the same expert.
-    `dst` must not overlap `x`; it is replaced, not added to its old contents.
+    `dst` must not overlap `x`; its old contents are overwritten.
     """
     if (
         routing.n_experts != weights.n_experts

@@ -1,4 +1,9 @@
-"""Quantized GEMM: f32 activations x Q4_K / Q6_K weights.
+"""Activation quantization, and a row-major reference GEMM over Q4_K / Q6_K weights.
+
+`quantize_acts` feeds every projection. `qgemm` multiplies the GGUF row-major
+blocks directly: a reference that tests/test_quant.mojo checks against the
+dequantized weights. The kernel the models run is `PackedMatrix` with `pgemm`
+in `kernels/packed.mojo`.
 
 A denoising step pushes the whole canvas (prompt + generation, L tokens)
 through every linear layer, so this is a GEMM with L in the tens to hundreds,

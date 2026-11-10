@@ -6,9 +6,9 @@ i5-13420H one Gracemont E-core runs the quantized GEMM at a third of a
 Golden Cove P-core's rate, so 8 workers measured barely faster than one P-core.
 
 Here each worker claims the next item from a shared atomic counter until none
-are left, so fast cores simply take more items. The counter lives on its own
+are left, so fast cores take more items. The counter lives on its own
 64-byte line in a heap block, because an atomic that moves with a Mojo local is
-two counters, not one.
+two separate counters.
 """
 
 from std.atomic import Atomic

@@ -1,7 +1,8 @@
 """GPU kernels for the masked-diffusion forward pass (NVIDIA, via Mojo's DeviceContext).
 
-Each kernel mirrors a CPU function in `kernels/ops.mojo` or `kernels/qgemm.mojo`,
-and tests/gpu/test_gpu.mojo compares them one to one.
+Most kernels mirror a CPU function in `kernels/ops.mojo`, `kernels/qgemm.mojo` or
+`models/transformer.mojo`, and tests/gpu/test_gpu.mojo compares them one to one;
+a fused kernel is compared with the chain of kernels it replaces.
 
 The linear layers read GGUF K-quant blocks in place. Activations are quantized
 to int8 with one f32 scale per 32 values (llama.cpp's Q8_1 shape), so a
@@ -983,7 +984,8 @@ def stage_matrix(
 # it runs one mma.m16n8k32 (Q6_K: two m16n8k16, one per 16-group scale) per
 # 8 tokens and folds the int32 result into f32 with the sub-block's scales.
 #
-# Fragment layouts (verified against a CPU matmul, scratch/gpu/mma_layout):
+# Fragment layouts (checked against a CPU matmul by test_mma_k32_fragment_layout
+# and test_mma_k16_fragment_layout, which run `mma_tile_gpu`):
 #   g = lane / 4, t = lane % 4
 #   A row-major 16 x 32: a0 (g, 4t..), a1 (g+8, 4t..), a2 (g, 16+4t..), a3 (g+8, 16+4t..)
 #   B as 8 token rows x 32: b0 (n=g, 4t..), b1 (n=g, 16+4t..)
@@ -1655,9 +1657,9 @@ def _pick_q6_bn(n_tokens: Int, n_rows: Int, sm_count: Int) -> Int:
     """Balance short Q6_K tile work against scheduling waves on RTX Blackwell.
 
     A 16-token overhead per wave approximates staging/barrier work. Unlike
-    just minimizing the number of token tiles, this accounts for narrow GQA
+    minimizing the number of token tiles alone, this accounts for narrow GQA
     projections and for shapes whose 32-token grid fits in two SM waves.
-    It is a measured dispatch heuristic, not an occupancy estimate.
+    The rule is a dispatch heuristic chosen by timing; occupancy was not modelled.
     Preserve the previous rule for long canvases and other architectures.
     """
     var best = _pick_bn(n_tokens)
@@ -1678,11 +1680,12 @@ def _pick_q6_bn(n_tokens: Int, n_rows: Int, sm_count: Int) -> Int:
 def _pick_q4_bn(n_tokens: Int, n_rows: Int, sm_count: Int) -> Int:
     """Use the narrowest Q4_K tile that does not add a block wave.
 
-    Estimate one resident block per SM; this is a scheduling heuristic,
-    not a measured occupancy guarantee. Fewer token tiles alone can waste
+    Estimate one resident block per SM. The rule is a scheduling heuristic;
+    occupancy was not measured. Fewer token tiles alone can waste
     lanes on a wide GPU: at
     148 tokens and 4096 weight rows, both BN=80 (64 blocks) and BN=64
-    (96 blocks) fit in one 156-SM wave. The narrower tile does less work.
+    (96 blocks) fit in one wave on a GPU with at least 96 SMs. The narrower tile
+    does less work.
     Zero SMs preserves the existing policy for unmeasured device families.
     """
     var best = _pick_bn(n_tokens)

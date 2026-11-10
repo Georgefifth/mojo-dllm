@@ -240,7 +240,8 @@ def select_top(conf: List[Float64], k: Int) -> List[Int]:
     var idx = List[Int](capacity=len(conf))
     for i in range(len(conf)):
         idx.append(i)
-    # Insertion sort: candidates per step are at most one block (tens of items).
+    # Insertion sort: O(n^2) in the candidates of a step, which are one block
+    # for LLaDA and the whole generation region for Dream.
     for a in range(1, len(idx)):
         var v = idx[a]
         var b = a - 1

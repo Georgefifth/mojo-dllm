@@ -57,9 +57,10 @@ comptime P32_SB = 288
 """Per 32 weights: f32 scales[8], then 8 steps x 4 bytes x 8 rows."""
 comptime TOK_TILE_Q4 = 8
 """Tokens per register tile for Q4_K: 8 independent vpdpbusd chains hide its
-5-cycle latency (measured +10% over 4 on an i5-13420H)."""
+latency."""
 comptime TOK_TILE_Q6 = 4
-"""Q6_K keeps 4: its unpacked byte layout needs more registers, and 8 measured 9% slower."""
+"""Tokens per register tile for Q6_K, Q5_0 and Q8_0. Q6_K keeps 4 because its
+unpacked byte layout needs more registers; the 32-wide types share the value."""
 comptime GROUPS_PER_ITEM = 2
 
 

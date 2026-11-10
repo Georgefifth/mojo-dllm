@@ -226,8 +226,9 @@ def _match_at(cps: List[Int], cls: List[Int], i: Int) -> Int:
 struct Tokenizer(Movable):
     """The tokenizer of a GGUF file: `gpt2` (byte-level BPE) or `gemma4`.
 
-    The fields below `g4` belong to the byte-level BPE and stay empty for a
-    gemma4 file, whose vocabulary lives in `g4`. The id fields are filled for both.
+    The fields from `tokens` to `uc` belong to the byte-level BPE and stay empty
+    for a gemma4 file, whose vocabulary lives in `g4`. The id fields are filled for
+    both.
     """
 
     var tokens: List[String]

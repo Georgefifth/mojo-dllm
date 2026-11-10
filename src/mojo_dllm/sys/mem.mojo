@@ -30,7 +30,7 @@ def alloc_bytes(n_bytes: Int, zero: Bool = True) raises -> Int:
     """A 64-byte aligned block, zeroed unless the caller overwrites all of it.
 
     Blocks of 2 MiB and more are aligned to 2 MiB and advised as huge-page
-    candidates: the repacked model is about 5 GB, and 4 KiB pages would cost
+    candidates: a repacked model is several gigabytes, and 4 KiB pages would cost
     over a million page faults to populate it.
     """
     if n_bytes < 0:
@@ -67,7 +67,7 @@ def free_bytes(addr: Int):
 
 
 struct Bytes(Movable):
-    """An owned, aligned, zeroed byte block."""
+    """An owned, aligned byte block, zeroed unless `zero` is False."""
 
     var addr: Int
     var size: Int
