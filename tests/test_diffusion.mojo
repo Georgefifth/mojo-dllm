@@ -699,6 +699,24 @@ def test_gumbel_draw_follows_softmax_of_logits_over_temperature() raises:
     assert_equal(f, _gumbel_frequency(logits, t, 20000, 1, 1))
 
 
+def test_gumbel_draw_with_three_candidates_follows_the_softmax() raises:
+    # Two candidates cannot tell the noise from its mirror image (the
+    # difference of two Gumbel variables is symmetric); three can. Logits
+    # T ln 1, T ln 2, T ln 3 give 1/6, 1/3 and 1/2; a draw that subtracted
+    # the noise instead of adding it gives about 0.13, 0.34 and 0.53.
+    var t = Float64(0.7)
+    var logits = Floats(3)
+    for i in range(3):
+        logits[i] = Float32(t * log(Float64(i + 1)))
+    for i in range(3):
+        var want = Float64(i + 1) / 6.0
+        var f = _gumbel_frequency(logits, t, 20000, 3, i)
+        assert_true(
+            abs(f - want) < 0.015,
+            "index " + String(i) + ": frequency " + String(f),
+        )
+
+
 def test_gumbel_draw_at_a_vanishing_temperature_is_the_argmax() raises:
     var logits = Floats(5)
     logits[0] = 0.3
