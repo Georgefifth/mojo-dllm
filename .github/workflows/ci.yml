@@ -114,6 +114,9 @@ jobs:
       - name: --visual-interval errors before model loading
         run: bash scripts/check_visual.sh
 
+      - name: MOJO_DLLM_* variables reach run
+        run: bash scripts/check_env.sh
+
   docs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10

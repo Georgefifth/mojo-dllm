@@ -407,6 +407,19 @@ def test_env_problem_names_the_variable() raises:
             + " (from MOJO_DLLM_TEMPERATURE)\nsee: mojo-dllm run --help"
         ),
     )
+    # --threshold goes through the same finite-number check, so a bad value
+    # from its variable is named too (review point 2 on #191).
+    assert_equal(
+        env_problem(
+            "flag --threshold needs a finite number, got 'abc'\n"
+            + "see: mojo-dllm run --help",
+            List[String](["threshold"]),
+        ),
+        (
+            "flag --threshold needs a finite number, got 'abc'"
+            + " (from MOJO_DLLM_THRESHOLD)\nsee: mojo-dllm run --help"
+        ),
+    )
 
 
 def test_env_problem_leaves_a_missing_value_alone() raises:

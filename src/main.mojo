@@ -1542,20 +1542,15 @@ def _run_env(raw: List[String]) raises -> Tuple[List[String], List[String]]:
     return with_env(raw, spec.values, spec.booleans, env)
 
 
-def main():
+def main() raises:
     var raw = List[String]()
     for s in argv():
         raw.append(String(s))
     var from_env = List[String]()
     if len(raw) > 1 and raw[1] == "run":
-        try:
-            var merged = _run_env(raw)
-            raw = merged[0].copy()
-            from_env = merged[1].copy()
-        except:
-            # `command_spec("run")` cannot fail, so this only guards the
-            # raises boundary; keep `raw` as typed if it ever did.
-            pass
+        var merged = _run_env(raw)
+        raw = merged[0].copy()
+        from_env = merged[1].copy()
     var code = execute(raw, from_env)
     if code != 0:
         exit(code)
