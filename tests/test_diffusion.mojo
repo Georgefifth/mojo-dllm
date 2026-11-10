@@ -102,18 +102,6 @@ def _tiny_dream_cfg() -> GenConfig:
     return c^
 
 
-def _tiny_dream_cfg() -> GenConfig:
-    # Same shape as `_tiny_cfg` but with Dream's mask id. The refusals this
-    # file pins all raise before `mask_id` is read, so its value only has to
-    # be Dream's for the config to be honest.
-    var c = GenConfig()
-    c.gen_length = 8
-    c.block_length = 4
-    c.steps = 4
-    c.mask_id = 510
-    return c^
-
-
 def test_generation_resolves_every_mask() raises:
     var m = DiffusionLM(FIX + "tiny-llada.gguf", threads=2, max_tokens=16)
     var prompt: List[Int] = [5, 17, 300]
