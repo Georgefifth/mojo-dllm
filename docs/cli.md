@@ -173,6 +173,9 @@ change nothing; every other error exits with status 1.
 | `ERROR: unknown flag --model=x for 'run'` | Flags take their value as the next argument. The next line says `flags take their value as the next argument: --model x` |
 | `ERROR: flag --prompt needs a value` | A value flag is the last argument |
 | `ERROR: flag --steps needs an integer, got 'abc'` | A numeric flag holds text, or a number too large for 64 bits. `--temperature` needs a finite number and `--tokens` and `--rows` need comma-separated integers |
+| `ERROR: flag --prompt needs a value, got the flag --verbose` | A value flag is followed by the name of a declared flag, which is almost always a forgotten value. `--help` stays a legal value |
+| `ERROR: flag --steps is given twice` | A value flag appears twice; the command no longer keeps the last silently. A boolean flag repeated is harmless |
+| `ERROR: flag --rows needs comma-separated integers, got '0,,2'` | An empty entry in `--tokens` or `--rows` (a trailing comma stays legal) |
 | `ERROR: flag --steps must be at least 1, got 0` | `--max-tokens`, `--steps`, `--block-length` and `--threads` need at least 1, and `--temperature` at least 0. `--threshold` needs a number from 0 to 1 and `--prev-temp-inv` one above 0. The check runs before the model is mapped |
 | `ERROR: prompt 10 + --max-tokens 4096 = 4106 exceeds the context length 4096 (llada.context_length)` | The canvas is longer than the file's context length. Lower `--max-tokens`. Exit status 1, before any weight is mapped |
 | `ERROR: cannot open model file PATH: No such file or directory` | The path is wrong. The reason is the operating system's. The next line is `to download a model, run: ./mojo-dllm pull` |

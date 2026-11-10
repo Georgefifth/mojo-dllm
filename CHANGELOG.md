@@ -174,6 +174,14 @@ semantic versioning (0.y: minor bumps may break things).
 
 ### Changed
 
+- The flag parser refuses what it used to accept silently (issue #222): a lookup of a flag name that the command
+  does not declare (`a.int_or("max-token", 128)` returned the default), a value that is the name of a declared flag
+  (`--prompt --verbose` took `--verbose` as the prompt), a value flag given twice (the last won) and an empty entry in
+  `--tokens` or `--rows` (`--rows 0,,2` named two rows; a trailing comma stays legal). Each usage error names the
+  flag and exits with status 2. The range of each numeric flag lives in one place, `int_flag_rule` and
+  `float_flag_rule` in the sampler, which the command line and the sampler both use, so `--temperature` is now checked
+  by the sampler too (a NaN used to read as greedy). `Decision` has `help`, `error` and `run` constructors and derives
+  the exit status, and `CanvasPrinter` refuses an interval below 1 in its constructor.
 - `logits` writes its `.f32` file through `FILE.tmp`, checks the size and renames it (issue #208). On a full disk
   `FileHandle.write_bytes` does not return an error: in Mojo 1.1.0 it calls `abort()` when `write()` fails
   (`std/io/file.mojo`, tag `mojo/v1.1.0`, line 598), so the old code ended with SIGABRT and a partial file under the

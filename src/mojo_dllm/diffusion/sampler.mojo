@@ -103,6 +103,36 @@ struct GenConfig(Copyable, Movable):
         self.eb_confidence = 0.005
 
 
+def int_flag_rule(flag: String, n: Int) -> String:
+    """The range rule an integer generation flag breaks, or "" when `n` is fine.
+
+    The one place the ranges live: the command line words its usage error from
+    it (`flag --steps must be at least 1, got 0`) and the sampler words its own
+    refusal from it (`--eb-steps must be at least 1, got 0`).
+    """
+    if flag == "eb-stability":
+        return "must be at least 0" if n < 0 else ""
+    if flag == "seed":
+        return ""
+    return "must be at least 1" if n < 1 else ""
+
+
+def float_flag_rule(flag: String, x: Float64) -> String:
+    """The range rule a float generation flag breaks, or "" when `x` is fine.
+
+    A NaN or an infinity breaks every rule: `x > 0` is false for NaN, so an
+    unchecked NaN temperature reads as greedy and a NaN threshold never fires.
+    """
+    if not isfinite(x):
+        return "must be a finite number"
+    if flag == "eb-t-max" or flag == "prev-temp-inv":
+        return "must be above 0" if x <= 0 else ""
+    if flag == "threshold":
+        return "must be between 0 and 1" if x < 0 or x > 1 else ""
+    # temperature, eb-t-min, eb-bound, eb-confidence
+    return "must be at least 0" if x < 0 else ""
+
+
 struct GenResult(Movable):
     var tokens: List[Int]
     var step_ms: List[Float64]
@@ -361,6 +391,9 @@ def generate_observed[
     mut model: M, prompt: List[Int], cfg: GenConfig, mut obs: O
 ) raises -> GenResult:
     """Like `generate`, calling `obs.on_step` after every denoising step."""
+    var rule = float_flag_rule("temperature", cfg.temperature)
+    if rule.byte_length() > 0:
+        raise _eb_flag_error("temperature", rule, String(cfg.temperature))
     if model.config().arch == "dream":
         return _generate_dream(model, prompt, cfg, obs)
     if model.config().arch == "diffusion-gemma":
@@ -919,6 +952,28 @@ def _eb_flag_error(flag: String, rule: String, got: String) -> Error:
     return Error("--" + flag + " " + rule + ", got " + got)
 
 
+def _check_eb_flags(cfg: GenConfig) raises:
+    """Refuse an entropy-bound setting outside its range, by the shared rules.
+    """
+    var rule = int_flag_rule("eb-steps", cfg.eb_steps)
+    if rule.byte_length() > 0:
+        raise _eb_flag_error("eb-steps", rule, String(cfg.eb_steps))
+    rule = int_flag_rule("eb-stability", cfg.eb_stability)
+    if rule.byte_length() > 0:
+        raise _eb_flag_error("eb-stability", rule, String(cfg.eb_stability))
+    for flag in ["eb-t-min", "eb-t-max", "eb-bound", "eb-confidence"]:
+        var x = cfg.eb_t_min
+        if flag == "eb-t-max":
+            x = cfg.eb_t_max
+        elif flag == "eb-bound":
+            x = cfg.eb_bound
+        elif flag == "eb-confidence":
+            x = cfg.eb_confidence
+        rule = float_flag_rule(flag, x)
+        if rule.byte_length() > 0:
+            raise _eb_flag_error(flag, rule, String(x))
+
+
 def _generate_diffusion_gemma[
     M: DenoisingModel, O: StepObserver
 ](
@@ -959,32 +1014,9 @@ def _generate_diffusion_gemma[
             + String(model.config().canvas)
             + " (diffusion.canvas_length)"
         )
-    if cfg.eb_steps < 1:
-        raise _eb_flag_error(
-            "eb-steps", "must be at least 1", String(cfg.eb_steps)
-        )
     # The reference accepts t_min = 0: every step still runs at a positive
     # temperature, the last at t_min + (t_max - t_min) / steps.
-    if not isfinite(cfg.eb_t_min) or cfg.eb_t_min < 0:
-        raise _eb_flag_error(
-            "eb-t-min", "must be at least 0", String(cfg.eb_t_min)
-        )
-    if not isfinite(cfg.eb_t_max) or cfg.eb_t_max <= 0:
-        raise _eb_flag_error(
-            "eb-t-max", "must be a number above 0", String(cfg.eb_t_max)
-        )
-    if not isfinite(cfg.eb_bound) or cfg.eb_bound < 0:
-        raise _eb_flag_error(
-            "eb-bound", "must be at least 0", String(cfg.eb_bound)
-        )
-    if cfg.eb_stability < 0:
-        raise _eb_flag_error(
-            "eb-stability", "must be at least 0", String(cfg.eb_stability)
-        )
-    if not isfinite(cfg.eb_confidence) or cfg.eb_confidence < 0:
-        raise _eb_flag_error(
-            "eb-confidence", "must be at least 0", String(cfg.eb_confidence)
-        )
+    _check_eb_flags(cfg)
     var P = len(prompt)
     if P == 0:
         raise Error("DiffusionGemma needs at least one prompt token")

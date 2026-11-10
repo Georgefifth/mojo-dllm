@@ -1,5 +1,5 @@
 from std.ffi import c_int, c_size_t, external_call
-from std.testing import assert_equal, assert_true, TestSuite
+from std.testing import assert_equal, assert_true, assert_raises, TestSuite
 
 from cli.args import Args
 from cli.visual import CanvasPrinter, frame_style, prints_answer, render_frame
@@ -120,7 +120,7 @@ def _printer(
     interval: Int = 1,
     is_tty: Bool = True,
     no_color: String = "",
-) -> CanvasPrinter:
+) raises -> CanvasPrinter:
     return CanvasPrinter(tok^, 0, tok.mask_id, True, interval, is_tty, no_color)
 
 
@@ -200,6 +200,19 @@ def test_frame_style_respects_tty_and_no_color() raises:
     assert_true(empty_is_unset[0])
 
 
+def test_the_printer_refuses_an_interval_below_one() raises:
+    # `step % 0` divides by zero; cmd_run checks the flag, the constructor
+    # checks every other caller.
+    for bad in List[Int]([0, -1]):
+        var tok = _tokenizer()
+        with assert_raises(
+            contains="visual interval must be at least 1, got " + String(bad)
+        ):
+            _ = CanvasPrinter(tok^, 0, 5, True, bad)
+    var tok = _tokenizer()
+    _ = CanvasPrinter(tok^, 0, 5, True, 1)
+
+
 def test_disabled_printer_does_not_write() raises:
     var tok = _tokenizer()
     var tokens = _canvas(tok)
@@ -264,7 +277,7 @@ def test_run_finishes_when_early_stop_skips_interval() raises:
             "--json",
         ],
         ["visual-interval"],
-        ["visual", "json"],
+        ["visual", "json", "verbose", "dump-step-stats", "no-early-stop"],
     )
     var run_cfg = GenConfig()
     run_cfg.gen_length = 8
@@ -328,7 +341,11 @@ def _run_json(
     raw.append("--json")
     if not early_stop:
         raw.append("--no-early-stop")
-    var args = Args(raw, List[String](), ["json", "no-early-stop"])
+    var args = Args(
+        raw,
+        ["visual-interval"],
+        ["json", "no-early-stop", "verbose", "dump-step-stats", "visual"],
+    )
     var output = _OutputCapture()
     try:
         _run(model, args, cfg^, prompt, tok^, 0.0, "cpu", "cpu", 1)

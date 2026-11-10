@@ -374,6 +374,20 @@ def test_rejects_bad_block_geometry() raises:
         _ = generate(m, prompt, c)
 
 
+def test_generate_refuses_a_temperature_that_is_not_a_number_or_negative() raises:
+    # `nan > 0` is false, so a NaN temperature read as greedy decoding.
+    var m = DiffusionLM(FIX + "tiny-llada.gguf", threads=2, max_tokens=16)
+    var prompt: List[Int] = [5]
+    var c = _tiny_cfg()
+    c.temperature = Float64("nan")
+    with assert_raises(contains="--temperature must be a finite number, got"):
+        _ = generate(m, prompt, c)
+    c = _tiny_cfg()
+    c.temperature = -0.5
+    with assert_raises(contains="--temperature must be at least 0, got -0.5"):
+        _ = generate(m, prompt, c)
+
+
 # The eleven refusals below each pin one guard in the sampler. Every config
 # starts from a tiny cfg that generates cleanly, then flips the one field the
 # guard reads, so the assert fails if that guard is removed. #144.

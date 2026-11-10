@@ -26,7 +26,9 @@ from mojo_dllm.formats.gguf import GGUFFile, GGUF_TYPE_ARRAY
 from mojo_dllm.diffusion.sampler import (
     GenConfig,
     GenResult,
+    float_flag_rule,
     generate_observed,
+    int_flag_rule,
 )
 from mojo_dllm.gpu.model import GpuDiffusionLM
 from mojo_dllm.models.diffusion_gemma import DiffusionGemma
@@ -224,6 +226,13 @@ def _equals_advice(a: Args, spec: CommandSpec) -> String:
     return String("")
 
 
+def _given(a: Args, flag: String) raises -> Bool:
+    """True when the command declares `flag` and the command line sets it. The
+    numeric checks run for every command, so a flag only some commands declare
+    must not be looked up on the others."""
+    return a.declares(flag) and a.has(flag)
+
+
 def remasking_names() -> List[String]:
     """Every `--remasking` value some architecture takes: LLaDA the first two,
     Dream the last three (`low_confidence` means `entropy` there)."""
@@ -246,7 +255,7 @@ def schedule_problem(a: Args) raises -> String:
     """
     var gen = Int(a.get_or("max-tokens", "128"))
     var explicit = a.has("block-length")
-    var block = Int(a.values["block-length"]) if explicit else min(32, gen)
+    var block = Int(a.get("block-length")) if explicit else min(32, gen)
     var steps = Int(a.get_or("steps", String(gen)))
     if gen % block != 0:
         if explicit:
@@ -294,23 +303,29 @@ def _number_problems(a: Args) raises -> String:
         "eb-steps",
         "eb-stability",
     ]:
-        if not a.has(flag):
+        if not _given(a, flag):
             continue
-        var raw = a.values[flag]
+        var raw = a.get(flag)
         var n: Int
         try:
             n = Int(raw)
         except:
             return "flag --" + flag + " needs an integer, got '" + raw + "'"
-        if flag == "eb-stability":
-            if n < 0:
-                return "flag --" + flag + " must be at least 0, got " + raw
-        elif flag != "seed" and n < 1:
-            return "flag --" + flag + " must be at least 1, got " + raw
-    for flag in ["eb-t-min", "eb-t-max", "eb-bound", "eb-confidence"]:
-        if not a.has(flag):
+        var rule = int_flag_rule(flag, n)
+        if rule.byte_length() > 0:
+            return "flag --" + flag + " " + rule + ", got " + raw
+    for flag in [
+        "eb-t-min",
+        "eb-t-max",
+        "eb-bound",
+        "eb-confidence",
+        "temperature",
+        "threshold",
+        "prev-temp-inv",
+    ]:
+        if not _given(a, flag):
             continue
-        var raw = a.values[flag]
+        var raw = a.get(flag)
         var x = Float64(0)
         var parsed = True
         try:
@@ -321,51 +336,19 @@ def _number_problems(a: Args) raises -> String:
             return (
                 "flag --" + flag + " needs a finite number, got '" + raw + "'"
             )
-        if flag == "eb-t-max":
-            if x <= 0:
-                return "flag --" + flag + " must be above 0, got " + raw
-        elif x < 0:
-            return "flag --" + flag + " must be at least 0, got " + raw
-    if a.has("temperature"):
-        var raw = a.values["temperature"]
-        var t = Float64(0)
-        var parsed = True
-        try:
-            t = Float64(raw)
-        except:
-            parsed = False
-        if not parsed or not isfinite(t):
-            return "flag --temperature needs a finite number, got '" + raw + "'"
-        if t < 0:
-            return "flag --temperature must be at least 0, got " + raw
-    for flag in ["threshold", "prev-temp-inv"]:
-        if not a.has(flag):
-            continue
-        var raw = a.values[flag]
-        var x = Float64(0)
-        var parsed = True
-        try:
-            x = Float64(raw)
-        except:
-            parsed = False
-        if not parsed or not isfinite(x):
-            return (
-                "flag --" + flag + " needs a finite number, got '" + raw + "'"
-            )
-        if flag == "threshold" and (x < 0 or x > 1):
-            return "flag --threshold must be between 0 and 1, got " + raw
-        if flag == "prev-temp-inv" and x <= 0:
-            return "flag --prev-temp-inv must be above 0, got " + raw
-    if a.has("device"):
-        var device = a.values["device"]
+        var rule = float_flag_rule(flag, x)
+        if rule.byte_length() > 0:
+            return "flag --" + flag + " " + rule + ", got " + raw
+    if _given(a, "device"):
+        var device = a.get("device")
         if device != "cpu" and device != "gpu":
             return "flag --device must be cpu or gpu, got '" + device + "'"
-    if a.has("path"):
-        var kind = a.values["path"]
+    if _given(a, "path"):
+        var kind = a.get("path")
         if kind != "unified" and kind != "cached":
             return "flag --path must be unified or cached, got '" + kind + "'"
-    if a.has("remasking"):
-        var name = a.values["remasking"]
+    if _given(a, "remasking"):
+        var name = a.get("remasking")
         var known = False
         for candidate in remasking_names():
             if candidate == name:
@@ -379,16 +362,16 @@ def _number_problems(a: Args) raises -> String:
                 + "'"
             )
         if name == "random" and a.has("threshold"):
-            if Float64(a.values["threshold"]) > 0:
+            if Float64(a.get("threshold")) > 0:
                 return "flag --threshold needs low_confidence remasking"
-    if a.has("block-length"):
+    if _given(a, "block-length"):
         var schedule = schedule_problem(a)
         if schedule.byte_length() > 0:
             return schedule
     for flag in ["tokens", "rows"]:
-        if not a.has(flag):
+        if not _given(a, flag):
             continue
-        var raw = a.values[flag]
+        var raw = a.get(flag)
         try:
             _ = parse_csv_ints(raw)
         except:
@@ -407,6 +390,16 @@ def check_args(a: Args, spec: CommandSpec) raises -> String:
     var see = "\nsee: mojo-dllm " + a.command + " --help"
     if a.missing_value.byte_length() > 0:
         return "flag --" + a.missing_value + " needs a value" + see
+    if a.flag_value.byte_length() > 0:
+        return (
+            "flag --"
+            + a.flag_value
+            + " needs a value, got the flag "
+            + a.flag_value_text
+            + see
+        )
+    if a.repeated.byte_length() > 0:
+        return "flag --" + a.repeated + " is given twice" + see
     if len(a.unknown) > 0:
         var advice = _equals_advice(a, spec)
         if advice.byte_length() > 0:
@@ -1136,7 +1129,7 @@ def cmd_logits(a: Args) raises:
         raise Error("unknown device: " + device + " (expected cpu or gpu)")
 
 
-def gemma_only_flags(a: Args) -> String:
+def gemma_only_flags(a: Args) raises -> String:
     """The `logits` flags that only a diffusion-gemma model takes, as given."""
     var given = String("")
     for name in ["path", "prev", "prev-temp-inv"]:
@@ -1329,59 +1322,78 @@ def boolean_flags() -> List[String]:
 struct Decision(Movable):
     """What the arguments call for, before anything is loaded or printed.
 
-    `code` is the exit status: 0 for help or a run to start, 2 for a usage
-    error (`is_error`, and `text` is the message). `proceed` means the
-    arguments are valid and the command should run.
+    Three kinds, built by `help`, `error` and `run`, and nothing else: the exit
+    status follows from the kind (0 for help and a run to start, 2 for a usage
+    error), so no field combination can contradict it. `text` is the help text
+    or the error message and is empty for a run.
     """
 
-    var code: Int
-    var text: String
-    var is_error: Bool
-    var proceed: Bool
+    comptime HELP = 0
+    comptime ERROR = 1
+    comptime RUN = 2
 
-    def __init__(
-        out self, code: Int, text: String, is_error: Bool, proceed: Bool
-    ):
-        self.code = code
+    var kind: Int
+    var text: String
+
+    def __init__(out self, kind: Int, text: String):
+        self.kind = kind
         self.text = text
-        self.is_error = is_error
-        self.proceed = proceed
+
+    @staticmethod
+    def help(text: String) -> Self:
+        return Self(Self.HELP, text)
+
+    @staticmethod
+    def error(text: String) -> Self:
+        return Self(Self.ERROR, text)
+
+    @staticmethod
+    def run() -> Self:
+        return Self(Self.RUN, String(""))
+
+    def code(self) -> Int:
+        """The exit status: 2 for a usage error, 0 otherwise."""
+        return 2 if self.kind == Self.ERROR else 0
+
+    def is_error(self) -> Bool:
+        return self.kind == Self.ERROR
+
+    def proceeds(self) -> Bool:
+        """The arguments are valid and the command should run."""
+        return self.kind == Self.RUN
 
 
 def decide(raw: List[String]) raises -> Decision:
     """Help, usage errors and valid arguments, in that order of precedence."""
     var command = raw[1] if len(raw) > 1 else String("")
     if is_top_level_help(command):
-        return Decision(0, usage(), False, False)
+        return Decision.help(usage())
     if command == "--version":
-        return Decision(0, version_line(), False, False)
+        return Decision.help(version_line())
     if not command_known(command):
-        return Decision(
-            2,
-            "unknown command: " + command + "\nsee: mojo-dllm --help",
-            True,
-            False,
+        return Decision.error(
+            "unknown command: " + command + "\nsee: mojo-dllm --help"
         )
     var spec = command_spec(command)
     var a = Args(raw, spec.values, spec.booleans)
     if a.has("help"):
-        return Decision(0, usage_for(command), False, False)
+        return Decision.help(usage_for(command))
     var problem = check_args(a, spec)
     if problem.byte_length() > 0:
-        return Decision(2, problem, True, False)
-    return Decision(0, String(""), False, True)
+        return Decision.error(problem)
+    return Decision.run()
 
 
 def execute(raw: List[String]) -> Int:
     """Runs the command line and returns the exit status: 0, 1 or 2."""
     try:
         var d = decide(raw)
-        if d.is_error:
+        if d.is_error():
             print("ERROR:", d.text)
-            return d.code
-        if not d.proceed:
+            return d.code()
+        if not d.proceeds():
             print(d.text)
-            return d.code
+            return d.code()
         var command = raw[1]
         var spec = command_spec(command)
         var a = Args(raw, spec.values, spec.booleans)

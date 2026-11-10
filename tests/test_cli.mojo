@@ -381,8 +381,8 @@ def _decide(command: String, rest: List[String]) raises -> Decision:
 
 def test_unknown_command_is_a_usage_error() raises:
     var d = _decide("bogus", [])
-    assert_equal(d.code, 2)
-    assert_true(d.is_error)
+    assert_equal(d.code(), 2)
+    assert_true(d.is_error())
     assert_equal(d.text, "unknown command: bogus\nsee: mojo-dllm --help")
     assert_equal(execute(["mojo-dllm", "bogus"]), 2)
 
@@ -390,17 +390,17 @@ def test_unknown_command_is_a_usage_error() raises:
 def test_help_exits_zero_and_wins_over_other_problems() raises:
     for command in List[String](["", "help", "--help", "-h"]):
         var d = _decide(command, [])
-        assert_equal(d.code, 0)
-        assert_true(not d.is_error)
+        assert_equal(d.code(), 0)
+        assert_true(not d.is_error())
         assert_equal(d.text, usage())
     for command in List[String](["run", "tokenize", "inspect", "logits"]):
         var d = _decide(command, ["--stpes", "--steps", "abc", "--help"])
-        assert_equal(d.code, 0)
+        assert_equal(d.code(), 0)
         assert_equal(d.text, usage_for(command))
-        assert_true(not d.proceed)
+        assert_true(not d.proceeds())
     # --help before a value flag that has no value: help, not "needs a value".
     var late = _decide("run", ["--help", "--prompt"])
-    assert_equal(late.code, 0)
+    assert_equal(late.code(), 0)
     assert_equal(late.text, usage_for("run"))
     assert_equal(execute(["mojo-dllm", "run", "--help", "--prompt"]), 0)
     assert_equal(execute(["mojo-dllm", "--help"]), 0)
@@ -408,9 +408,9 @@ def test_help_exits_zero_and_wins_over_other_problems() raises:
 
 def test_version_flag_prints_one_line_and_exits_zero() raises:
     var d = _decide("--version", [])
-    assert_equal(d.code, 0)
-    assert_true(not d.is_error)
-    assert_true(not d.proceed)
+    assert_equal(d.code(), 0)
+    assert_true(not d.is_error())
+    assert_true(not d.proceeds())
     assert_equal(d.text, version_line())
     assert_true(not d.text.__contains__("\n"))
     assert_true(usage().startswith(version_line() + ": "))
@@ -423,10 +423,10 @@ def test_usage_mentions_the_version_flag() raises:
 
 def test_usage_errors_exit_two() raises:
     var unknown = _decide("run", ["--stpes", "3"])
-    assert_equal(unknown.code, 2)
-    assert_true(unknown.is_error)
+    assert_equal(unknown.code(), 2)
+    assert_true(unknown.is_error())
     var missing = _decide("run", ["--model", "m", "--prompt"])
-    assert_equal(missing.code, 2)
+    assert_equal(missing.code(), 2)
     assert_equal(
         missing.text,
         "flag --prompt needs a value\nsee: mojo-dllm run --help",
@@ -434,7 +434,7 @@ def test_usage_errors_exit_two() raises:
     var number = _decide(
         "run", ["--model", "m", "--prompt", "p", "--steps", "abc"]
     )
-    assert_equal(number.code, 2)
+    assert_equal(number.code(), 2)
     assert_equal(
         number.text,
         "flag --steps needs an integer, got 'abc'\nsee: mojo-dllm run --help",
@@ -458,11 +458,29 @@ def test_usage_errors_exit_two() raises:
     )
 
 
+def test_decisions_derive_the_exit_code_from_their_kind() raises:
+    var help = Decision.help("usage text")
+    assert_equal(help.code(), 0)
+    assert_equal(help.text, "usage text")
+    assert_true(not help.is_error())
+    assert_true(not help.proceeds())
+    var error = Decision.error("bad flag")
+    assert_equal(error.code(), 2)
+    assert_equal(error.text, "bad flag")
+    assert_true(error.is_error())
+    assert_true(not error.proceeds())
+    var run = Decision.run()
+    assert_equal(run.code(), 0)
+    assert_equal(run.text, "")
+    assert_true(not run.is_error())
+    assert_true(run.proceeds())
+
+
 def test_valid_arguments_proceed() raises:
     var d = _decide("run", ["--model", "m", "--prompt", "p"])
-    assert_equal(d.code, 0)
-    assert_true(d.proceed)
-    assert_true(not d.is_error)
+    assert_equal(d.code(), 0)
+    assert_true(d.proceeds())
+    assert_true(not d.is_error())
 
 
 def test_runtime_failure_exits_one() raises:
@@ -693,6 +711,69 @@ def test_csv_flags_of_logits_are_checked() raises:
             "flag --tokens needs comma-separated integers, got '1,x'\nsee:"
             " mojo-dllm logits --help"
         ),
+    )
+
+
+def test_an_empty_csv_part_is_a_usage_error_naming_the_flag() raises:
+    var message = _check(
+        "logits",
+        ["--model", "m", "--tokens", "1,2", "--rows", "0,,2", "--out", "o"],
+    )
+    assert_equal(
+        message,
+        (
+            "flag --rows needs comma-separated integers, got '0,,2'\nsee:"
+            " mojo-dllm logits --help"
+        ),
+    )
+    assert_equal(
+        _check(
+            "logits",
+            [
+                "--model",
+                "m",
+                "--tokens",
+                "1,2,",
+                "--rows",
+                "0,1,",
+                "--out",
+                "o",
+            ],
+        ),
+        "",
+    )
+
+
+def test_a_flag_name_as_a_value_is_a_usage_error() raises:
+    assert_equal(
+        _check("run", ["--model", "m", "--prompt", "--verbose"]),
+        (
+            "flag --prompt needs a value, got the flag --verbose\nsee:"
+            " mojo-dllm run --help"
+        ),
+    )
+    assert_equal(
+        _check("run", ["--model", "--prompt", "p"]),
+        (
+            "flag --model needs a value, got the flag --prompt\nsee:"
+            " mojo-dllm run --help"
+        ),
+    )
+    # --help is not a declared flag name: it stays a legal prompt, as docs say.
+    assert_equal(_check("run", ["--model", "m", "--prompt", "--help"]), "")
+
+
+def test_a_repeated_value_flag_is_a_usage_error() raises:
+    assert_equal(
+        _check(
+            "run",
+            ["--model", "m", "--prompt", "p", "--steps", "4", "--steps", "5"],
+        ),
+        "flag --steps is given twice\nsee: mojo-dllm run --help",
+    )
+    # A boolean flag given twice says the same thing twice and stays legal.
+    assert_equal(
+        _check("run", ["--model", "m", "--prompt", "p", "--json", "--json"]), ""
     )
 
 
