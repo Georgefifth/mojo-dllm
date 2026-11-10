@@ -5,6 +5,7 @@ from mojo_dllm.formats.gguf import GGUFFile
 from mojo_dllm.models.transformer import (
     DiffusionLM,
     ModelConfig,
+    check_window,
     _load_matrix,
     _load_vector,
 )
@@ -266,6 +267,30 @@ def test_a_window_reads_stale_cache_rows_llada() raises:
 def test_a_window_reads_stale_cache_rows_dream() raises:
     _check_stale_window("tiny-dream.gguf", 1)
     _check_stale_window("tiny-dream.gguf", 7)
+
+
+def test_the_input_length_limit_is_exact() raises:
+    # n_tokens == max_tokens runs; one more raises. The limit sizes every
+    # buffer, so a guard that lets one extra token through overruns them.
+    var toks = _tokens()
+    assert_equal(len(toks), 8)
+    var rows: List[Int] = [0]
+    # The guard itself, on its own: a model that wrongly accepted the ninth
+    # token would overrun its buffers, so this case must fail by assertion.
+    check_window(8, 8, 0, 8, rows, False, -1)
+    with assert_raises(
+        contains="input of 9 tokens exceeds the runtime limit of 8"
+    ):
+        check_window(9, 8, 0, 9, rows, False, -1)
+    var m = DiffusionLM(FIX + "tiny-llada.gguf", threads=2, max_tokens=8)
+    var out = Floats(VOCAB)
+    m.forward(toks, rows, out.ptr())
+    var longer = _tokens()
+    longer.append(7)
+    with assert_raises(
+        contains="input of 9 tokens exceeds the runtime limit of 8"
+    ):
+        m.forward(longer, rows, out.ptr())
 
 
 def test_load_matrix_refuses_a_shape_that_is_not_the_tensors() raises:
